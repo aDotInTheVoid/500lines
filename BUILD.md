@@ -1,5 +1,8 @@
 # Building 500 Lines or Less
 
+Use gnu sed
+
+
 500 Lines or Less has been successfully built on several Linux systems, as well
 as OSX 10.10+. Almost all of the software mentioned in the below instructions
 should be available via your favorite package manager, with the possible

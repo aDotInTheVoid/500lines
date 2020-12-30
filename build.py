@@ -81,7 +81,7 @@ def main(chapters=[], epub=False, pdf=False, html=False, mobi=False, pandoc_epub
         "./web-server/web-server-images",
     ]
 
-    run("cp -r minutiae/pdf/* tex")
+    run("sh -c 'cp -r minutiae/pdf/* tex'")
 
     with open("tex/500L.tex", "w") as out:
         with open("tex/500L.template.tex") as template:
@@ -117,6 +117,7 @@ def main(chapters=[], epub=False, pdf=False, html=False, mobi=False, pandoc_epub
         build_mobi()
 
     if html:
+        run("mkdir -pv html/content/pages/")
         for imgpath in image_paths:
             run("cp -a {imgpath} html/content/pages/".format(imgpath=imgpath))
         run("cp minutiae/html/introduction.md html/content/pages/.")

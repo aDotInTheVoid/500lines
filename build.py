@@ -11,7 +11,7 @@ def main(chapters=[], epub=False, pdf=False, html=False, mobi=False, pandoc_epub
     else:
         output_files = glob.glob("output/*")
         for f in output_files:
-            run("rm {}".format(f))
+            run("rm -f {}".format(f))
 
     chapter_dirs = [
         "blockcode",
@@ -247,16 +247,20 @@ def pandoc_cmd(chapter_markdown):
 
 
 def run(cmd):
-    print(f"\n--- Running {cmd} ---")
+    print(f"--- Running {cmd} ---")
     result = envoy.run(cmd)
+    nl = False
     if p := result.std_out:
         print("--- stdout ---")
         print(p)
+        nl=True
     if p := result.std_err:
         print("--- stderr ---")
         print(p)
-    if result.status_code != 0:
-        print("!!!!! COMMAND FAILED !!!!!")
+        nl=True
+    if nl:
+        print()
+    assert result.status_code == 0
     return result
 
 

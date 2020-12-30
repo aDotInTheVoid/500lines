@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="provenance" content="$Id: index.html 1472 2012-09-21 22:17:41Z audrey $" />
+    <link rel="stylesheet" href="/theme/css/bootstrap.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/bootstrap-responsive.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/code.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/500L.css" type="text/css" />
+    <title>500 Lines or Less | A Continuous Integration System</title>
+    <script type="text/x-mathjax-config">
+        MathJax.Hub.Config({
+          tex2jax: {
+            inlineMath: [['$','$'], ['\\(','\\)']],
+            displayMath: [ ['$$','$$'], ["\\[","\\]"] ],
+          },
+        });
+    </script>
+    <script type="text/javascript" src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+    </script>
+</head>
+  <body>
+    <div class="container">
+      <div class="row">
+        <div class="hero-unit">
+	  <a class='pull-right' href='/en/index.html'></a>
+          <h1>A Continuous Integration System</h1>
+          <h2 class="author">Malini Das</h2>
+          <blockquote class="pull-right">
+            </blockquote>
+
+        </div>
+      </div>
+      <div class="row">
+        <div class='span10 offset1' id='content'>
+          <p><em>Malini Das is a software engineer who is passionate about developing quickly (but safely!), and solving cross-functional problems. She has worked at Mozilla as a tools engineer and is currently honing her skills at Twitch. Follow Malini on <a href="https://twitter.com/malinidas">Twitter</a> or on her <a href="http://malinidas.com/">blog</a>.</em></p>
+<h2 id="what-is-a-continuous-integration-system">What is a Continuous Integration System?</h2>
+<p>When developing software, we want to be able to verify that our new features or bug fixes are safe and work as expected. We do this by running tests against our code. Sometimes, developers will run tests locally to verify that their changes are safe, but developers may not have the time to test their code on every system their software runs in. Further, as more and more tests are added the amount of time required to run them, even only locally, becomes less viable. Because of this, continuous integration systems have been created.</p>
+<p>Continuous Integration (CI) systems are dedicated systems used to test new code. Upon a commit to the code repository, it is the responsibility of the continuous integration system to verify that this commit will not break any tests. To do this, the system must be able to fetch the new changes, run the tests and report its results. Like any other system, it should also be failure resistant. This means if any part of the system fails, it should be able to recover and continue from that point.</p>
+<p>This test system should also handle load well, so that we can get test results in a reasonable amount of time in the event that commits are being made faster than the tests can be run. We can achieve this by distributing and parallelizing the testing effort. This project will demonstrate a small, bare-bones distributed continuous integration system that is designed for extensibility.</p>
+<h2 id="project-limitations-and-notes">Project Limitations and Notes</h2>
+<p>This project uses Git as the repository for the code that needs to be tested. Only standard source code management calls will be used, so if you are unfamiliar with Git but are familiar with other version control systems (VCS) like svn or Mercurial, you can still follow along.</p>
+<p>Due to the limitations of code length and unittest, I simplified test discovery. We will <em>only</em> run tests that are in a directory named <code>tests</code> within the repository.</p>
+<p>Continuous integration systems monitor a master repository which is usually hosted on a web server, and not local to the CI’s file systems. For the cases of our example, we will use a local repository instead of a remote repository.</p>
+<p>Continuous integration systems need not run on a fixed, regular schedule. You can also have them run every few commits, or per-commit. For our example case, the CI system will run periodically. This means if it is set up to check for changes in five-second periods, it will run tests against the most recent commit made after the five-second period. It won’t test every commit made within that period of time, only the most recent one.</p>
+<p>This CI system is designed to check periodically for changes in a repository. In real-world CI systems, you can also have the repository observer get notified by a hosted repository. Github, for example, provides “post-commit hooks” which send out notifications to a URL. Following this model, the repository observer would be called by the web server hosted at that URL to respond to that notification. Since this is complex to model locally, we’re using an observer model, where the repository observer will check for changes instead of being notified.</p>
+<p>CI systems also have a reporter aspect, where the test runner reports its results to a component that makes them available for people to see, perhaps on a webpage. For simplicity, this project gathers the test results and stores them as files in the file system local to the dispatcher process.</p>
+<p>Note that the architecture this CI system uses is just one possibility among many. This approach has been chosen to simplify our case study into three main components.</p>
+<h2 id="introduction">Introduction</h2>
+<p>The basic structure of a continuous integration system consists of three components: an observer, a test job dispatcher, and a test runner. The observer watches the repository. When it notices that a commit has been made, it notifies the job dispatcher. The job dispatcher then finds a test runner and gives it the commit number to test.</p>
+<p>There are many ways to architect a CI system. We could have the observer, dispatcher and runner be the same process on a single machine. This approach is very limited since there is no load handling, so if more changes are added to the repository than the CI system can handle, a large backlog will accrue. This approach is also not fault-tolerant at all; if the computer it is running on fails or there is a power outage, there are no fallback systems, so no tests will run. The ideal system would be one that can handle as many test jobs as requested, and will do its best to compensate when machines go down.</p>
+<p>To build a CI system that is fault-tolerant and load-bearing, in this project, each of these components is its own process. This will let each process be independent of the others, and let us run multiple instances of each process. This is useful when you have more than one test job that needs to be run at the same time. We can then spawn multiple test runners in parallel, allowing us to run as many jobs as needed, and prevent us from accumulating a backlog of queued tests.</p>
+<p>In this project, not only do these components run as separate processes, but they also communicate via sockets, which will let us run each process on a separate, networked machine. A unique host/port address is assigned to each component, and each process can communicate with the others by posting messages at the assigned addresses.</p>
+<p>This design will let us handle hardware failures on the fly by enabling a distributed architecture. We can have the observer run on one machine, the test job dispatcher on another, and the test runners on another, and they can all communicate with each other over a network. If any of these machines go down, we can schedule a new machine to go up on the network, so the system becomes fail-safe.</p>
+<p>This project does not include auto-recovery code, as that is dependent on your distributed system’s architecture, but in the real world, CI systems are run in a distributed environment like this so they can have failover redundancy (i.e., we can fall back to a standby machine if one of the machines a process was running on becomes defunct).</p>
+<p>For the purposes of this project, each of these processes will be locally and manually started distinct local ports.</p>
+<h3 id="files-in-this-project">Files in this Project</h3>
+<p>This project contains Python files for each of these components: the repository observer (<code>repo_observer.py</code>), the test job dispatcher (<code>dispatcher.py</code>), and the test runner (<code>test_runner.py</code>). Each of these three processes communicate with each other using sockets, and since the code used to transmit information is shared by all of them, there is a helpers.py file that contains it, so each process imports the communicate function from here instead of having it duplicated in the file.</p>
+<p>There are also bash script files used by these processes. These script files are used to execute bash and git commands in an easier way than constantly using Python’s operating system-level modules like os and subprocess.</p>
+<p>Lastly, there is a tests directory, which contains two example tests the CI system will run. One test will pass, and the other will fail.</p>
+<h3 id="initial-setup">Initial Setup</h3>
+<p>While this CI system is ready to work in a distributed system, let us start by running everything locally on one computer so we can get a grasp on how the CI system works without adding the risk of running into network-related issues. If you wish to run this in a distributed environment, you can run each component on its own machine.</p>
+<p>Continuous integration systems run tests by detecting changes in a code repository, so to start, we will need to set up the repository our CI system will monitor.</p>
+<p>Let’s call this <code>test_repo</code>:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> mkdir test_repo </span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> cd test_repo </span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> git init</span></code></pre></div>
+<p>This will be our master repository. This is where developers check in their code, so our CI should pull this repository and check for commits, then run tests. The thing that checks for new commits is the repository observer.</p>
+<p>The repository observer works by checking commits, so we need at least one commit in the master repository. Let’s commit our example tests so we have some tests to run.</p>
+<p>Copy the tests folder from this code base to <code>test_repo</code> and commit it:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> cp <span class="at">-r</span> /this/directory/tests /path/to/test_repo/ </span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> cd /path/to/test\_repo </span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> git add tests/ </span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> git commit <span class="at">-m</span> ”add tests”</span></code></pre></div>
+<p>Now you have a commit in the master repository.</p>
+<p>The repo observer component will need its own clone of the code, so it can detect when a new commit is made. Let’s create a clone of our master repository, and call it <code>test_repo_clone_obs</code>:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> git clone /path/to/test_repo test_repo_clone_obs</span></code></pre></div>
+<p>The test runner will also need its own clone of the code, so it can checkout the repository at a given commit and run the tests. Let’s create another clone of our master repository, and call it <code>test_repo_clone_runner</code>:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> git clone /path/to/test_repo test_repo_clone_runner</span></code></pre></div>
+<h2 id="the-components">The Components</h2>
+<h3 id="the-repository-observer-repo_observer.py">The Repository Observer (<code>repo_observer.py</code>)</h3>
+<p>The repository observer monitors a repository and notifies the dispatcher when a new commit is seen. In order to work with all version control systems (since not all VCSs have built-in notification systems), this repository observer is written to periodically check the repository for new commits instead of relying on the VCS to notify it that changes have been made.</p>
+<p>The observer will poll the repository periodically, and when a change is seen, it will tell the dispatcher the newest commit ID to run tests against. The observer checks for new commits by finding the current commit ID in its repository, then updates the repository, and lastly, it finds the latest commit ID and compares them. For the purposes of this example, the observer will only dispatch tests against the latest commit. This means that if two commits are made between a periodic check, the observer will only run tests against the latest commit. Usually, a CI system will detect all commits since the last tested commit, and will dispatch test runners for each new commit, but I have modified this assumption for simplicity.</p>
+<p>The observer must know which repository to observe. We previously created a clone of our repository at <code>/path/to/test_repo_clone_obs</code>. The observer will use this clone to detect changes. To allow the repository observer to use this clone, we pass it the path when we invoke the <code>repo_observer.py</code> file. The repository observer will use this clone to pull from the main repository.</p>
+<p>We must also give the observer the dispatcher’s address, so the observer may send it messages. When you start the repository observer, you can pass in the dispatcher’s server address using the <code>--dispatcher-server</code> command line argument. If you do not pass it in, it will assume the default address of <code>localhost:8888</code>.</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> poll():</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    parser <span class="op">=</span> argparse.ArgumentParser()</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    parser.add_argument(<span class="st">&quot;--dispatcher-server&quot;</span>,</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>                        <span class="bu">help</span><span class="op">=</span><span class="st">&quot;dispatcher host:port, &quot;</span> \</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>                        <span class="st">&quot;by default it uses localhost:8888&quot;</span>,</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>                        default<span class="op">=</span><span class="st">&quot;localhost:8888&quot;</span>,</span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>                        action<span class="op">=</span><span class="st">&quot;store&quot;</span>)</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    parser.add_argument(<span class="st">&quot;repo&quot;</span>, metavar<span class="op">=</span><span class="st">&quot;REPO&quot;</span>, <span class="bu">type</span><span class="op">=</span><span class="bu">str</span>,</span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>                        <span class="bu">help</span><span class="op">=</span><span class="st">&quot;path to the repository this will observe&quot;</span>)</span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a>    args <span class="op">=</span> parser.parse_args()</span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a>    dispatcher_host, dispatcher_port <span class="op">=</span> args.dispatcher_server.split(<span class="st">&quot;:&quot;</span>)</span></code></pre></div>
+<p>Once the repository observer file is invoked, it starts the <code>poll()</code> function. This function parses the command line arguments, and then kicks off an infinite while loop. The while loop is used to periodically check the repository for changes. The first thing it does is call the <code>update_repo.sh</code> Bash script <a href="#fn1" class="footnote-ref" id="fnref1" role="doc-noteref"><sup>1</sup></a>.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> <span class="va">True</span>:</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>            <span class="co"># call the bash script that will update the repo and check</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>            <span class="co"># for changes. If there&#39;s a change, it will drop a .commit_id file</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>            <span class="co"># with the latest commit in the current working directory</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>            subprocess.check_output([<span class="st">&quot;./update_repo.sh&quot;</span>, args.repo])</span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> subprocess.CalledProcessError <span class="im">as</span> e:</span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span> <span class="pp">Exception</span>(<span class="st">&quot;Could not update and check repository. &quot;</span> <span class="op">+</span></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a>                            <span class="st">&quot;Reason: </span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> e.output)</span></code></pre></div>
+<p>The <code>update_repo.sh</code> file is used to identify any new commits and let the repository observer know. It does this by noting what commit ID we are currently aware of, then pulls the repository, and checks the latest commit ID. If they match, no changes are made, so the repository observer doesn’t need to do anything, but if there is a difference in the commit ID, then we know a new commit has been made. In this case, <code>update_repo.sh</code> will create a file called <code>.commit_id</code> with the latest commit ID stored in it.</p>
+<p>A step-by-step breakdown of <code>update_repo.sh</code> is as follows. First, the script sources the <code>run_or_fail.sh</code> file, which provides the <code>run_or_fail</code> helper method used by all our shell scripts. This method is used to run the given command, or fail with the given error message.</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co">#!/bin/bash</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="bu">source</span> run_or_fail.sh </span></code></pre></div>
+<p>Next, the script tries to remove a file named <code>.commit_id</code>. Since <code>updaterepo.sh</code> is called infinitely by the <code>repo_observer.py</code> file, if we previously had a new commit, then <code>.commit_id</code> was created, but holds a commit we already tested. Therefore, we want to remove that file, and create a new one only if a new commit is found.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="fu">bash</span> rm <span class="at">-f</span> .commit_id </span></code></pre></div>
+<p>After it removes the file (if it existed), it verifies that the repository we are observing exists, and then resets it to the most recent commit, in case anything caused it to get out of sync.</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="ex">run_or_fail</span> <span class="st">&quot;Repository folder not found!&quot;</span> pushd <span class="va">$1</span> <span class="dv">1</span><span class="op">&gt;</span> /dev/null</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="ex">run_or_fail</span> <span class="st">&quot;Could not reset git&quot;</span> git reset <span class="at">--hard</span> HEAD</span></code></pre></div>
+<p>It then calls git log and parses the output, looking for the most recent commit ID.</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="va">COMMIT=$(</span><span class="ex">run_or_fail</span> <span class="st">&quot;Could not call &#39;git log&#39; on repository&quot;</span> git log <span class="at">-n1</span><span class="va">)</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="bu">[</span> <span class="va">$?</span> <span class="ot">!=</span> 0 <span class="bu">]</span><span class="kw">;</span> <span class="cf">then</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>  <span class="bu">echo</span> <span class="st">&quot;Could not call &#39;git log&#39; on repository&quot;</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>  <span class="bu">exit</span> 1</span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a><span class="cf">fi</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a><span class="va">COMMIT_ID=</span><span class="kw">`</span><span class="bu">echo</span> <span class="va">$COMMIT</span> <span class="kw">|</span> <span class="fu">awk</span> <span class="st">&#39;{ print $2 }&#39;</span><span class="kw">`</span></span></code></pre></div>
+<p>Then it pulls the repository, getting any recent changes, then gets the most recent commit ID.</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="ex">run_or_fail</span> <span class="st">&quot;Could not pull from repository&quot;</span> git pull</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="va">COMMIT=$(</span><span class="ex">run_or_fail</span> <span class="st">&quot;Could not call &#39;git log&#39; on repository&quot;</span> git log <span class="at">-n1</span><span class="va">)</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="bu">[</span> <span class="va">$?</span> <span class="ot">!=</span> 0 <span class="bu">]</span><span class="kw">;</span> <span class="cf">then</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>  <span class="bu">echo</span> <span class="st">&quot;Could not call &#39;git log&#39; on repository&quot;</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>  <span class="bu">exit</span> 1</span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a><span class="cf">fi</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a><span class="va">NEW_COMMIT_ID=</span><span class="kw">`</span><span class="bu">echo</span> <span class="va">$COMMIT</span> <span class="kw">|</span> <span class="fu">awk</span> <span class="st">&#39;{ print $2 }&#39;</span><span class="kw">`</span></span></code></pre></div>
+<p>Lastly, if the commit ID doesn’t match the previous ID, then we know we have new commits to check, so the script stores the latest commit ID in a .commit_id file.</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="co"># if the id changed, then write it to a file</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="bu">[</span> <span class="va">$NEW_COMMIT_ID</span> <span class="ot">!=</span> <span class="va">$COMMIT_ID</span> <span class="bu">]</span><span class="kw">;</span> <span class="cf">then</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>  <span class="bu">popd</span> <span class="dv">1</span><span class="op">&gt;</span> /dev/null</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>  <span class="bu">echo</span> <span class="va">$NEW_COMMIT_ID</span> <span class="op">&gt;</span> .commit_id</span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a><span class="cf">fi</span></span></code></pre></div>
+<p>When <code>update_repo.sh</code> finishes running in <code>repo_observer.py</code>, the repository observer checks for the existence of the <code>.commit_id</code> file. If the file does exist, then we know we have a new commit, and we need to notify the dispatcher so it can kick off the tests. The repository observer will check the dispatcher server’s status by connecting to it and sending a ‘status’ request, to make sure there are no problems with it, and to make sure it is ready for instruction.</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> os.path.isfile(<span class="st">&quot;.commit_id&quot;</span>):</span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>            <span class="cf">try</span>:</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>                response <span class="op">=</span> helpers.communicate(dispatcher_host,</span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>                                               <span class="bu">int</span>(dispatcher_port),</span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>                                               <span class="st">&quot;status&quot;</span>)</span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>            <span class="cf">except</span> socket.error <span class="im">as</span> e:</span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">Exception</span>(<span class="st">&quot;Could not communicate with dispatcher server: </span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> e)</span></code></pre></div>
+<p>If it responds with “OK”, then the repository observer opens the <code>.commit_id</code> file, reads the latest commit ID and sends that ID to the dispatcher, using a <code>dispatch:&lt;commit ID&gt;</code> request. It will then sleep for five seconds and repeat the process. We’ll also try again in five seconds if anything went wrong along the way.</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> response <span class="op">==</span> <span class="st">&quot;OK&quot;</span>:</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>                commit <span class="op">=</span> <span class="st">&quot;&quot;</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>                <span class="cf">with</span> <span class="bu">open</span>(<span class="st">&quot;.commit_id&quot;</span>, <span class="st">&quot;r&quot;</span>) <span class="im">as</span> f:</span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>                    commit <span class="op">=</span> f.readline()</span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>                response <span class="op">=</span> helpers.communicate(dispatcher_host,</span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>                                               <span class="bu">int</span>(dispatcher_port),</span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>                                               <span class="st">&quot;dispatch:</span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> commit)</span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> response <span class="op">!=</span> <span class="st">&quot;OK&quot;</span>:</span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">raise</span> <span class="pp">Exception</span>(<span class="st">&quot;Could not dispatch the test: </span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>                    response)</span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a>                <span class="bu">print</span> <span class="st">&quot;dispatched!&quot;</span></span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a>            <span class="cf">else</span>:</span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a>                <span class="cf">raise</span> <span class="pp">Exception</span>(<span class="st">&quot;Could not dispatch the test: </span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span></span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a>                response)</span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a>        time.sleep(<span class="dv">5</span>)</span></code></pre></div>
+<p>The repository observer will repeat this process forever, until you kill the process via a <code>KeyboardInterrupt</code> (Ctrl+c), or by sending it a kill signal.</p>
+<h3 id="the-dispatcher-dispatcher.py">The Dispatcher (<code>dispatcher.py</code>)</h3>
+<p>The dispatcher is a separate service used to delegate testing tasks. It listens on a port for requests from test runners and from the repository observer. It allows test runners to register themselves, and when given a commit ID from the repository observer, it will dispatch a test runner against the new commit. It also gracefully handles any problems with the test runners and will redistribute the commit ID to a new test runner if anything goes wrong.</p>
+<p>When <code>dispatch.py</code> is executed, the <code>serve</code> function is called. First it parses the arguments that allow you to specify the dispatcher’s host and port:</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> serve():</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>    parser <span class="op">=</span> argparse.ArgumentParser()</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>    parser.add_argument(<span class="st">&quot;--host&quot;</span>,</span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>                        <span class="bu">help</span><span class="op">=</span><span class="st">&quot;dispatcher&#39;s host, by default it uses localhost&quot;</span>,</span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>                        default<span class="op">=</span><span class="st">&quot;localhost&quot;</span>,</span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>                        action<span class="op">=</span><span class="st">&quot;store&quot;</span>)</span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>    parser.add_argument(<span class="st">&quot;--port&quot;</span>,</span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>                        <span class="bu">help</span><span class="op">=</span><span class="st">&quot;dispatcher&#39;s port, by default it uses 8888&quot;</span>,</span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a>                        default<span class="op">=</span><span class="dv">8888</span>,</span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a>                        action<span class="op">=</span><span class="st">&quot;store&quot;</span>)</span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a>    args <span class="op">=</span> parser.parse_args()</span></code></pre></div>
+<p>This starts the dispatcher server, and two other threads. One thread runs the <code>runner_checker</code> function, and other runs the <code>redistribute</code> function.</p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>    server <span class="op">=</span> ThreadingTCPServer((args.host, <span class="bu">int</span>(args.port)), DispatcherHandler)</span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span> `serving on <span class="op">%</span>s:<span class="op">%</span>s` <span class="op">%</span> (args.host, <span class="bu">int</span>(args.port))</span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>    ...</span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>    runner_heartbeat <span class="op">=</span> threading.Thread(target<span class="op">=</span>runner_checker, args<span class="op">=</span>(server,))</span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>    redistributor <span class="op">=</span> threading.Thread(target<span class="op">=</span>redistribute, args<span class="op">=</span>(server,))</span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span>:</span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>        runner_heartbeat.start()</span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a>        redistributor.start()</span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Activate the server; this will keep running until you</span></span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a>        <span class="co"># interrupt the program with Ctrl+C or Cmd+C</span></span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a>        server.serve_forever()</span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a>    <span class="cf">except</span> (<span class="pp">KeyboardInterrupt</span>, <span class="pp">Exception</span>):</span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a>        <span class="co"># if any exception occurs, kill the thread</span></span>
+<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a>        server.dead <span class="op">=</span> <span class="va">True</span></span>
+<span id="cb16-17"><a href="#cb16-17" aria-hidden="true" tabindex="-1"></a>        runner_heartbeat.join()</span>
+<span id="cb16-18"><a href="#cb16-18" aria-hidden="true" tabindex="-1"></a>        redistributor.join()</span></code></pre></div>
+<p>The <code>runner_checker</code> function periodically pings each registered test runner to make sure they are still responsive. If they become unresponsive, then that runner will be removed from the pool and its commit ID will be dispatched to the next available runner. The function will log the commit ID in the <code>pending_commits</code> variable.</p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> runner_checker(server):</span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>        <span class="kw">def</span> manage_commit_lists(runner):</span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>            <span class="cf">for</span> commit, assigned_runner <span class="kw">in</span> server.dispatched_commits.iteritems():</span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> assigned_runner <span class="op">==</span> runner:</span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>                    <span class="kw">del</span> server.dispatched_commits[commit]</span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>                    server.pending_commits.append(commit)</span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">break</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>            server.runners.remove(runner)</span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>        <span class="cf">while</span> <span class="kw">not</span> server.dead:</span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a>            time.sleep(<span class="dv">1</span>)</span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>            <span class="cf">for</span> runner <span class="kw">in</span> server.runners:</span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a>                s <span class="op">=</span> socket.socket(socket.AF_INET, socket.SOCK_STREAM)</span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a>                <span class="cf">try</span>:</span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a>                    response <span class="op">=</span> helpers.communicate(runner[<span class="st">&quot;host&quot;</span>],</span>
+<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a>                                                   <span class="bu">int</span>(runner[<span class="st">&quot;port&quot;</span>]),</span>
+<span id="cb17-16"><a href="#cb17-16" aria-hidden="true" tabindex="-1"></a>                                                   <span class="st">&quot;ping&quot;</span>)</span>
+<span id="cb17-17"><a href="#cb17-17" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">if</span> response <span class="op">!=</span> <span class="st">&quot;pong&quot;</span>:</span>
+<span id="cb17-18"><a href="#cb17-18" aria-hidden="true" tabindex="-1"></a>                        <span class="bu">print</span> <span class="st">&quot;removing runner </span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> runner</span>
+<span id="cb17-19"><a href="#cb17-19" aria-hidden="true" tabindex="-1"></a>                        manage_commit_lists(runner)</span>
+<span id="cb17-20"><a href="#cb17-20" aria-hidden="true" tabindex="-1"></a>                <span class="cf">except</span> socket.error <span class="im">as</span> e:</span>
+<span id="cb17-21"><a href="#cb17-21" aria-hidden="true" tabindex="-1"></a>                    manage_commit_lists(runner)</span></code></pre></div>
+<p>The <code>redistribute</code> function is used to dispatch the commit IDs logged in <code>pending_commits</code>. When <code>redistribute</code> runs, it checks if there are any commit IDs in <code>pending_commits</code>. If so, it calls the <code>dispatch_tests</code> function with the commit ID.</p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> redistribute(server):</span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>        <span class="cf">while</span> <span class="kw">not</span> server.dead:</span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>            <span class="cf">for</span> commit <span class="kw">in</span> server.pending_commits:</span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>                <span class="bu">print</span> <span class="st">&quot;running redistribute&quot;</span></span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>                <span class="bu">print</span> server.pending_commits</span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>                dispatch_tests(server, commit)</span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>                time.sleep(<span class="dv">5</span>)</span></code></pre></div>
+<p>The <code>dispatch_tests</code> function is used to find an available test runner from the pool of registered runners. If one is available, it will send a runtest message to it with the commit ID. If none are currently available, it will wait two seconds and repeat this process. Once dispatched, it logs which commit ID is being tested by which test runner in the <code>dispatched_commits</code> variable. If the commit ID is in the <code>pending_commits</code> variable, <code>dispatch_tests</code> will remove it since it has already been successfully re-dispatched.</p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> dispatch_tests(server, commit_id):</span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># </span><span class="al">NOTE</span><span class="co">: usually we don&#39;t run this forever</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> <span class="va">True</span>:</span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>        <span class="bu">print</span> <span class="st">&quot;trying to dispatch to runners&quot;</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> runner <span class="kw">in</span> server.runners:</span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a>            response <span class="op">=</span> helpers.communicate(runner[<span class="st">&quot;host&quot;</span>],</span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a>                                           <span class="bu">int</span>(runner[<span class="st">&quot;port&quot;</span>]),</span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a>                                           <span class="st">&quot;runtest:</span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> commit_id)</span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> response <span class="op">==</span> <span class="st">&quot;OK&quot;</span>:</span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a>                <span class="bu">print</span> <span class="st">&quot;adding id </span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> commit_id</span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a>                server.dispatched_commits[commit_id] <span class="op">=</span> runner</span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> commit_id <span class="kw">in</span> server.pending_commits:</span>
+<span id="cb19-13"><a href="#cb19-13" aria-hidden="true" tabindex="-1"></a>                    server.pending_commits.remove(commit_id)</span>
+<span id="cb19-14"><a href="#cb19-14" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span></span>
+<span id="cb19-15"><a href="#cb19-15" aria-hidden="true" tabindex="-1"></a>        time.sleep(<span class="dv">2</span>)</span></code></pre></div>
+<p>The dispatcher server uses the <code>SocketServer</code> module, which is a very simple server that is part of the standard library. There are four basic server types in the <code>SocketServer</code> module: <code>TCP</code>, <code>UDP</code>, <code>UnixStreamServer</code> and <code>UnixDatagramServer</code>. We will be using a TCP-based socket server so we can ensure continuous, ordered streams of data between servers, as UDP does not ensure this.</p>
+<p>The default <code>TCPServer</code> provided by <code>SocketServer</code> can only handle one request at a time, so it cannot handle the case where the dispatcher is talking to one connection, say from a test runner, and then a new connection comes in, say from the repository observer. If this happens, the repository observer would have to wait for the first connection to complete and disconnect before it would be serviced. This is not ideal for our case, since the dispatcher server must be able to directly and swiftly communicate with all test runners and the repository observer.</p>
+<p>In order for the dispatcher server to handle simultaneous connections, it uses the <code>ThreadingTCPServer</code> custom class, which adds threading ability to the default <code>SocketServer</code>. This means that any time the dispatcher receives a connection request, it spins off a new process just for that connection. This allows the dispatcher to handle multiple requests at the same time.</p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> ThreadingTCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):</span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>    runners <span class="op">=</span> [] <span class="co"># Keeps track of test runner pool</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a>    dead <span class="op">=</span> <span class="va">False</span> <span class="co"># Indicate to other threads that we are no longer running</span></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a>    dispatched_commits <span class="op">=</span> {} <span class="co"># Keeps track of commits we dispatched</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a>    pending_commits <span class="op">=</span> [] <span class="co"># Keeps track of commits we have yet to dispatch</span></span></code></pre></div>
+<p>The dispatcher server works by defining handlers for each request. This is defined by the <code>DispatcherHandler</code> class, which inherits from <code>SocketServer</code>’s <code>BaseRequestHandler</code>. This base class just needs us to define the handle function, which will be invoked whenever a connection is requested. The handle function defined in <code>DispatcherHandler</code> is our custom handler, and it will be called on each connection. It looks at the incoming connection request (<code>self.request</code> holds the request information), and parses out what command is being requested of it.</p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> DispatcherHandler(SocketServer.BaseRequestHandler):</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a><span class="co">    The RequestHandler class for our dispatcher.</span></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a><span class="co">    This will dispatch test runners against the incoming commit</span></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a><span class="co">    and handle their requests and test results</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a><span class="co">    &quot;&quot;&quot;</span></span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>    command_re <span class="op">=</span> re.<span class="bu">compile</span>(<span class="vs">r&quot;(\w+)(:.+)*&quot;</span>)</span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a>    BUF_SIZE <span class="op">=</span> <span class="dv">1024</span></span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> handle(<span class="va">self</span>):</span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.data <span class="op">=</span> <span class="va">self</span>.request.recv(<span class="va">self</span>.BUF_SIZE).strip()</span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a>        command_groups <span class="op">=</span> <span class="va">self</span>.command_re.match(<span class="va">self</span>.data)</span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">not</span> command_groups:</span>
+<span id="cb21-13"><a href="#cb21-13" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.request.sendall(<span class="st">&quot;Invalid command&quot;</span>)</span>
+<span id="cb21-14"><a href="#cb21-14" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span></span>
+<span id="cb21-15"><a href="#cb21-15" aria-hidden="true" tabindex="-1"></a>        command <span class="op">=</span> command_groups.group(<span class="dv">1</span>)</span></code></pre></div>
+<p>It handles four commands: <code>status</code>, <code>register</code>, <code>dispatch</code>, and <code>results</code>. <code>status</code> is used to check if the dispatcher server is up and running.</p>
+<div class="sourceCode" id="cb22"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> command <span class="op">==</span> <span class="st">&quot;status&quot;</span>:</span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>            <span class="bu">print</span> <span class="st">&quot;in status&quot;</span></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.request.sendall(<span class="st">&quot;OK&quot;</span>)</span></code></pre></div>
+<p>In order for the dispatcher to do anything useful, it needs to have at least one test runner registered. When register is called on a host:port pair, it stores the runner’s information in a list (the runners object attached to the <code>ThreadingTCPServer</code> object) so it can communicate with the runner later, when it needs to give it a commit ID to run tests against.</p>
+<div class="sourceCode" id="cb23"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> command <span class="op">==</span> <span class="st">&quot;register&quot;</span>:</span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>            <span class="co"># Add this test runner to our pool</span></span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>            <span class="bu">print</span> <span class="st">&quot;register&quot;</span></span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>            address <span class="op">=</span> command_groups.group(<span class="dv">2</span>)</span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a>            host, port <span class="op">=</span> re.findall(<span class="vs">r&quot;:(\w*)&quot;</span>, address)</span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a>            runner <span class="op">=</span> {<span class="st">&quot;host&quot;</span>: host, <span class="st">&quot;port&quot;</span>:port}</span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.server.runners.append(runner)</span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.request.sendall(<span class="st">&quot;OK&quot;</span>)</span></code></pre></div>
+<p><code>dispatch</code> is used by the repository observer to dispatch a test runner against a commit. The format of this command is <code>dispatch:&lt;commit ID&gt;</code>. The dispatcher parses out the commit ID from this message and sends it to the test runner.</p>
+<div class="sourceCode" id="cb24"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> command <span class="op">==</span> <span class="st">&quot;dispatch&quot;</span>:</span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a>            <span class="bu">print</span> <span class="st">&quot;going to dispatch&quot;</span></span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a>            commit_id <span class="op">=</span> command_groups.group(<span class="dv">2</span>)[<span class="dv">1</span>:]</span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="kw">not</span> <span class="va">self</span>.server.runners:</span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.request.sendall(<span class="st">&quot;No runners are registered&quot;</span>)</span>
+<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a>            <span class="cf">else</span>:</span>
+<span id="cb24-7"><a href="#cb24-7" aria-hidden="true" tabindex="-1"></a>                <span class="co"># The coordinator can trust us to dispatch the test</span></span>
+<span id="cb24-8"><a href="#cb24-8" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.request.sendall(<span class="st">&quot;OK&quot;</span>)</span>
+<span id="cb24-9"><a href="#cb24-9" aria-hidden="true" tabindex="-1"></a>                dispatch_tests(<span class="va">self</span>.server, commit_id)</span></code></pre></div>
+<p><code>results</code> is used by a test runner to report the results of a finished test run. The format of this command is <code>results:&lt;commit ID&gt;:&lt;length of results data in bytes&gt;:&lt;results&gt;</code>. The <code>&lt;commit ID&gt;</code> is used to identify which commit ID the tests were run against. The <code>&lt;length of results data in bytes&gt;</code> is used to figure out how big a buffer is needed for the results data. Lastly, <code>&lt;results&gt;</code> holds the actual result output.</p>
+<div class="sourceCode" id="cb25"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> command <span class="op">==</span> <span class="st">&quot;results&quot;</span>:</span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>            <span class="bu">print</span> <span class="st">&quot;got test results&quot;</span></span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>            results <span class="op">=</span> command_groups.group(<span class="dv">2</span>)[<span class="dv">1</span>:]</span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a>            results <span class="op">=</span> results.split(<span class="st">&quot;:&quot;</span>)</span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a>            commit_id <span class="op">=</span> results[<span class="dv">0</span>]</span>
+<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a>            length_msg <span class="op">=</span> <span class="bu">int</span>(results[<span class="dv">1</span>])</span>
+<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a>            <span class="co"># 3 is the number of &quot;:&quot; in the sent command</span></span>
+<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a>            remaining_buffer <span class="op">=</span> <span class="va">self</span>.BUF_SIZE <span class="op">-</span> <span class="op">\</span></span>
+<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a>                (<span class="bu">len</span>(command) <span class="op">+</span> <span class="bu">len</span>(commit_id) <span class="op">+</span> <span class="bu">len</span>(results[<span class="dv">1</span>]) <span class="op">+</span> <span class="dv">3</span>)</span>
+<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> length_msg <span class="op">&gt;</span> remaining_buffer:</span>
+<span id="cb25-11"><a href="#cb25-11" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.data <span class="op">+=</span> <span class="va">self</span>.request.recv(length_msg <span class="op">-</span> remaining_buffer).strip()</span>
+<span id="cb25-12"><a href="#cb25-12" aria-hidden="true" tabindex="-1"></a>            <span class="kw">del</span> <span class="va">self</span>.server.dispatched_commits[commit_id]</span>
+<span id="cb25-13"><a href="#cb25-13" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="kw">not</span> os.path.exists(<span class="st">&quot;test_results&quot;</span>):</span>
+<span id="cb25-14"><a href="#cb25-14" aria-hidden="true" tabindex="-1"></a>                os.makedirs(<span class="st">&quot;test_results&quot;</span>)</span>
+<span id="cb25-15"><a href="#cb25-15" aria-hidden="true" tabindex="-1"></a>            <span class="cf">with</span> <span class="bu">open</span>(<span class="st">&quot;test_results/</span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> commit_id, <span class="st">&quot;w&quot;</span>) <span class="im">as</span> f:</span>
+<span id="cb25-16"><a href="#cb25-16" aria-hidden="true" tabindex="-1"></a>                data <span class="op">=</span> <span class="va">self</span>.data.split(<span class="st">&quot;:&quot;</span>)[<span class="dv">3</span>:]</span>
+<span id="cb25-17"><a href="#cb25-17" aria-hidden="true" tabindex="-1"></a>                data <span class="op">=</span> <span class="st">&quot;</span><span class="ch">\n</span><span class="st">&quot;</span>.join(data)</span>
+<span id="cb25-18"><a href="#cb25-18" aria-hidden="true" tabindex="-1"></a>                f.write(data)</span>
+<span id="cb25-19"><a href="#cb25-19" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.request.sendall(<span class="st">&quot;OK&quot;</span>)</span></code></pre></div>
+<h3 id="the-test-runner-test_runner.py">The Test Runner (<code>test_runner.py</code>)</h3>
+<p>The test runner is responsible for running tests against a given commit ID and reporting the results. It communicates only with the dispatcher server, which is responsible for giving it the commit IDs to run against, and which will receive the test results.</p>
+<p>When the <code>test_runner.py</code> file is invoked, it calls the <code>serve</code> function which starts the test runner server, and also starts a thread to run the <code>dispatcher_checker</code> function. Since this startup process is very similar to the ones described in <code>repo_observer.py</code> and <code>dispatcher.py</code>, we omit the description here.</p>
+<p>The <code>dispatcher_checker</code> function pings the dispatcher server every five seconds to make sure it is still up and running. This is important for resource management. If the dispatcher goes down, then the test runner will shut down since it won’t be able to do any meaningful work if there is no dispatcher to give it work or to report to.</p>
+<div class="sourceCode" id="cb26"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> dispatcher_checker(server):</span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>        <span class="cf">while</span> <span class="kw">not</span> server.dead:</span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>            time.sleep(<span class="dv">5</span>)</span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> (time.time() <span class="op">-</span> server.last_communication) <span class="op">&gt;</span> <span class="dv">10</span>:</span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a>                <span class="cf">try</span>:</span>
+<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a>                    response <span class="op">=</span> helpers.communicate(</span>
+<span id="cb26-7"><a href="#cb26-7" aria-hidden="true" tabindex="-1"></a>                                       server.dispatcher_server[<span class="st">&quot;host&quot;</span>],</span>
+<span id="cb26-8"><a href="#cb26-8" aria-hidden="true" tabindex="-1"></a>                                       <span class="bu">int</span>(server.dispatcher_server[<span class="st">&quot;port&quot;</span>]),</span>
+<span id="cb26-9"><a href="#cb26-9" aria-hidden="true" tabindex="-1"></a>                                       <span class="st">&quot;status&quot;</span>)</span>
+<span id="cb26-10"><a href="#cb26-10" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">if</span> response <span class="op">!=</span> <span class="st">&quot;OK&quot;</span>:</span>
+<span id="cb26-11"><a href="#cb26-11" aria-hidden="true" tabindex="-1"></a>                        <span class="bu">print</span> <span class="st">&quot;Dispatcher is no longer functional&quot;</span></span>
+<span id="cb26-12"><a href="#cb26-12" aria-hidden="true" tabindex="-1"></a>                        server.shutdown()</span>
+<span id="cb26-13"><a href="#cb26-13" aria-hidden="true" tabindex="-1"></a>                        <span class="cf">return</span></span>
+<span id="cb26-14"><a href="#cb26-14" aria-hidden="true" tabindex="-1"></a>                <span class="cf">except</span> socket.error <span class="im">as</span> e:</span>
+<span id="cb26-15"><a href="#cb26-15" aria-hidden="true" tabindex="-1"></a>                    <span class="bu">print</span> <span class="st">&quot;Can&#39;t communicate with dispatcher: </span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> e</span>
+<span id="cb26-16"><a href="#cb26-16" aria-hidden="true" tabindex="-1"></a>                    server.shutdown()</span>
+<span id="cb26-17"><a href="#cb26-17" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">return</span></span></code></pre></div>
+<p>The test runner is a <code>ThreadingTCPServer</code>, like the dispatcher server. It requires threading because not only will the dispatcher be giving it a commit ID to run, but the dispatcher will be pinging the runner periodically to verify that it is still up while it is running tests.</p>
+<div class="sourceCode" id="cb27"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> ThreadingTCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):</span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a>    dispatcher_server <span class="op">=</span> <span class="va">None</span> <span class="co"># Holds the dispatcher server host/port information</span></span>
+<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a>    last_communication <span class="op">=</span> <span class="va">None</span> <span class="co"># Keeps track of last communication from dispatcher</span></span>
+<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a>    busy <span class="op">=</span> <span class="va">False</span> <span class="co"># Status flag</span></span>
+<span id="cb27-5"><a href="#cb27-5" aria-hidden="true" tabindex="-1"></a>    dead <span class="op">=</span> <span class="va">False</span> <span class="co"># Status flag</span></span></code></pre></div>
+<p>The communication flow starts with the dispatcher requesting that the runner accept a commit ID to run. If the test runner is ready to run the job, it responds with an acknowledgement to the dispatcher server, which then closes the connection. In order for the test runner server to both run tests and accept more requests from the dispatcher, it starts the requested test job on a new thread.</p>
+<p>This means that when the dispatcher server makes a request (a ping, in this case) and expects a response, it will be done on a separate thread, while the test runner is busy running tests on its own thread. This allows the test runner server to handle multiple tasks simultaneously. Instead of this threaded design, it is possible to have the dispatcher server hold onto a connection with each test runner, but this would increase the dispatcher server’s memory needs, and is vulnerable to network problems, like accidentally dropped connections.</p>
+<p>The test runner server responds to two messages from the dispatcher. The first is <code>ping</code>, which is used by the dispatcher server to verify that the runner is still active.</p>
+<div class="sourceCode" id="cb28"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> TestHandler(SocketServer.BaseRequestHandler):</span>
+<span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a>    ...</span>
+<span id="cb28-3"><a href="#cb28-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb28-4"><a href="#cb28-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> handle(<span class="va">self</span>):</span>
+<span id="cb28-5"><a href="#cb28-5" aria-hidden="true" tabindex="-1"></a>        ....</span>
+<span id="cb28-6"><a href="#cb28-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> command <span class="op">==</span> <span class="st">&quot;ping&quot;</span>:</span>
+<span id="cb28-7"><a href="#cb28-7" aria-hidden="true" tabindex="-1"></a>            <span class="bu">print</span> <span class="st">&quot;pinged&quot;</span></span>
+<span id="cb28-8"><a href="#cb28-8" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.server.last_communication <span class="op">=</span> time.time()</span>
+<span id="cb28-9"><a href="#cb28-9" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.request.sendall(<span class="st">&quot;pong&quot;</span>)</span></code></pre></div>
+<p>The second is <code>runtest</code>, which accepts messages of the form <code>runtest:&lt;commit ID&gt;</code>, and is used to kick off tests on the given commit. When runtest is called, the test runner will check to see if it is already running a test, and if so, it will return a <code>BUSY</code> response to the dispatcher. If it is available, it will respond to the server with an <code>OK</code> message, set its status as busy and run its <code>run_tests</code> function.</p>
+<div class="sourceCode" id="cb29"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> command <span class="op">==</span> <span class="st">&quot;runtest&quot;</span>:</span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a>            <span class="bu">print</span> <span class="st">&quot;got runtest command: am I busy? </span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> <span class="va">self</span>.server.busy</span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="va">self</span>.server.busy:</span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.request.sendall(<span class="st">&quot;BUSY&quot;</span>)</span>
+<span id="cb29-5"><a href="#cb29-5" aria-hidden="true" tabindex="-1"></a>            <span class="cf">else</span>:</span>
+<span id="cb29-6"><a href="#cb29-6" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.request.sendall(<span class="st">&quot;OK&quot;</span>)</span>
+<span id="cb29-7"><a href="#cb29-7" aria-hidden="true" tabindex="-1"></a>                <span class="bu">print</span> <span class="st">&quot;running&quot;</span></span>
+<span id="cb29-8"><a href="#cb29-8" aria-hidden="true" tabindex="-1"></a>                commit_id <span class="op">=</span> command_groups.group(<span class="dv">2</span>)[<span class="dv">1</span>:]</span>
+<span id="cb29-9"><a href="#cb29-9" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.server.busy <span class="op">=</span> <span class="va">True</span></span>
+<span id="cb29-10"><a href="#cb29-10" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.run_tests(commit_id,</span>
+<span id="cb29-11"><a href="#cb29-11" aria-hidden="true" tabindex="-1"></a>                               <span class="va">self</span>.server.repo_folder)</span>
+<span id="cb29-12"><a href="#cb29-12" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.server.busy <span class="op">=</span> <span class="va">False</span></span></code></pre></div>
+<p>This function calls the shell script <code>test_runner_script.sh</code>, which updates the repository to the given commit ID. Once the script returns, if it was successful at updating the repository we run the tests using unittest and gather the results in a file. When the tests have finished running, the test runner reads in the results file and sends it in a results message to the dispatcher.</p>
+<div class="sourceCode" id="cb30"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> run_tests(<span class="va">self</span>, commit_id, repo_folder):</span>
+<span id="cb30-2"><a href="#cb30-2" aria-hidden="true" tabindex="-1"></a>        <span class="co"># update repo</span></span>
+<span id="cb30-3"><a href="#cb30-3" aria-hidden="true" tabindex="-1"></a>        output <span class="op">=</span> subprocess.check_output([<span class="st">&quot;./test_runner_script.sh&quot;</span>,</span>
+<span id="cb30-4"><a href="#cb30-4" aria-hidden="true" tabindex="-1"></a>                                        repo_folder, commit_id])</span>
+<span id="cb30-5"><a href="#cb30-5" aria-hidden="true" tabindex="-1"></a>        <span class="bu">print</span> output</span>
+<span id="cb30-6"><a href="#cb30-6" aria-hidden="true" tabindex="-1"></a>        <span class="co"># run the tests</span></span>
+<span id="cb30-7"><a href="#cb30-7" aria-hidden="true" tabindex="-1"></a>        test_folder <span class="op">=</span> os.path.join(repo_folder, <span class="st">&quot;tests&quot;</span>)</span>
+<span id="cb30-8"><a href="#cb30-8" aria-hidden="true" tabindex="-1"></a>        suite <span class="op">=</span> unittest.TestLoader().discover(test_folder)</span>
+<span id="cb30-9"><a href="#cb30-9" aria-hidden="true" tabindex="-1"></a>        result_file <span class="op">=</span> <span class="bu">open</span>(<span class="st">&quot;results&quot;</span>, <span class="st">&quot;w&quot;</span>)</span>
+<span id="cb30-10"><a href="#cb30-10" aria-hidden="true" tabindex="-1"></a>        unittest.TextTestRunner(result_file).run(suite)</span>
+<span id="cb30-11"><a href="#cb30-11" aria-hidden="true" tabindex="-1"></a>        result_file.close()</span>
+<span id="cb30-12"><a href="#cb30-12" aria-hidden="true" tabindex="-1"></a>        result_file <span class="op">=</span> <span class="bu">open</span>(<span class="st">&quot;results&quot;</span>, <span class="st">&quot;r&quot;</span>)</span>
+<span id="cb30-13"><a href="#cb30-13" aria-hidden="true" tabindex="-1"></a>        <span class="co"># give the dispatcher the results</span></span>
+<span id="cb30-14"><a href="#cb30-14" aria-hidden="true" tabindex="-1"></a>        output <span class="op">=</span> result_file.read()</span>
+<span id="cb30-15"><a href="#cb30-15" aria-hidden="true" tabindex="-1"></a>        helpers.communicate(<span class="va">self</span>.server.dispatcher_server[<span class="st">&quot;host&quot;</span>],</span>
+<span id="cb30-16"><a href="#cb30-16" aria-hidden="true" tabindex="-1"></a>                            <span class="bu">int</span>(<span class="va">self</span>.server.dispatcher_server[<span class="st">&quot;port&quot;</span>]),</span>
+<span id="cb30-17"><a href="#cb30-17" aria-hidden="true" tabindex="-1"></a>                            <span class="st">&quot;results:</span><span class="sc">%s</span><span class="st">:</span><span class="sc">%s</span><span class="st">:</span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> (commit_id, <span class="bu">len</span>(output), output))</span></code></pre></div>
+<p>Here’s <code>test_runner_script.sh</code>:</p>
+<div class="sourceCode" id="cb31"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a><span class="co">#!/bin/bash</span></span>
+<span id="cb31-2"><a href="#cb31-2" aria-hidden="true" tabindex="-1"></a><span class="va">REPO=$1</span></span>
+<span id="cb31-3"><a href="#cb31-3" aria-hidden="true" tabindex="-1"></a><span class="va">COMMIT=$2</span></span>
+<span id="cb31-4"><a href="#cb31-4" aria-hidden="true" tabindex="-1"></a><span class="bu">source</span> run_or_fail.sh</span>
+<span id="cb31-5"><a href="#cb31-5" aria-hidden="true" tabindex="-1"></a><span class="ex">run_or_fail</span> <span class="st">&quot;Repository folder not found&quot;</span> pushd <span class="st">&quot;</span><span class="va">$REPO</span><span class="st">&quot;</span> <span class="dv">1</span><span class="op">&gt;</span> /dev/null</span>
+<span id="cb31-6"><a href="#cb31-6" aria-hidden="true" tabindex="-1"></a><span class="ex">run_or_fail</span> <span class="st">&quot;Could not clean repository&quot;</span> git clean <span class="at">-d</span> <span class="at">-f</span> <span class="at">-x</span></span>
+<span id="cb31-7"><a href="#cb31-7" aria-hidden="true" tabindex="-1"></a><span class="ex">run_or_fail</span> <span class="st">&quot;Could not call git pull&quot;</span> git pull</span>
+<span id="cb31-8"><a href="#cb31-8" aria-hidden="true" tabindex="-1"></a><span class="ex">run_or_fail</span> <span class="st">&quot;Could not update to given commit hash&quot;</span> git reset <span class="at">--hard</span> <span class="st">&quot;</span><span class="va">$COMMIT</span><span class="st">&quot;</span></span></code></pre></div>
+<p>In order to run <code>test_runner.py</code>, you must point it to a clone of the repository to run tests against. In this case, you can use the previously created <code>/path/to/test_repo test_repo_clone_runner</code> clone as the argument. By default, <code>test_runner.py</code> will start its own server on localhost using a port in the range 8900-9000, and will try to connect to the dispatcher server at <code>localhost:8888</code>. You may pass it optional arguments to change these values. The <code>--host</code> and <code>--port</code> arguments are used to designate a specific address to run the test runner server on, and the <code>--dispatcher-server</code> argument specifies the address of the dispatcher.</p>
+<h3 id="control-flow-diagram">Control Flow Diagram</h3>
+<p><a href="#figure-2.1">Figure 2.1</a> is an overview diagram of this system. This diagram assumes that all three files (<code>repo_observer.py</code>, <code>dispatcher.py</code> and <code>test_runner.py</code>) are already running, and describes the actions each process takes when a new commit is made.</p>
+<div class="center figure">
+<a name="figure-2.1"></a><img src="ci-images/diagram.png" alt="Figure 2.1 - Control Flow" title="Figure 2.1 - Control Flow" />
+</div>
+<p class="center figcaption">
+<small>Figure 2.1 - Control Flow</small>
+</p>
+<h3 id="running-the-code">Running the Code</h3>
+<p>We can run this simple CI system locally, using three different terminal shells for each process. We start the dispatcher first, running on port 8888:</p>
+<div class="sourceCode" id="cb32"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb32-1"><a href="#cb32-1" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> python dispatcher.py</span></code></pre></div>
+<p>In a new shell, we start the test runner (so it can register itself with the dispatcher):</p>
+<div class="sourceCode" id="cb33"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> python test_runner.py <span class="op">&lt;</span>path/to/test_repo_clone_runner<span class="op">&gt;</span></span></code></pre></div>
+<p>The test runner will assign itself its own port, in the range 8900-9000. You may run as many test runners as you like.</p>
+<p>Lastly, in another new shell, let’s start the repo observer:</p>
+<div class="sourceCode" id="cb34"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> python repo_observer.py <span class="at">--dispatcher-server</span><span class="op">=</span>localhost:8888 <span class="op">&lt;</span>path/to/repo_clone_obs<span class="op">&gt;</span></span></code></pre></div>
+<p>Now that everything is set up, let’s trigger some tests! To do that, we’ll need to make a new commit. Go to your master repository and make an arbitrary change:</p>
+<div class="sourceCode" id="cb35"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb35-1"><a href="#cb35-1" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> cd /path/to/test_repo</span>
+<span id="cb35-2"><a href="#cb35-2" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> touch new_file</span>
+<span id="cb35-3"><a href="#cb35-3" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> git add new_file</span>
+<span id="cb35-4"><a href="#cb35-4" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> git commit <span class="at">-m</span><span class="st">&quot;new file&quot;</span> new_file</span></code></pre></div>
+<p>Then <code>repo_observer.py</code> will realize that there’s a new commit and notify the dispatcher. You can see the output in their respective shells, so you can monitor them. Once the dispatcher receives the test results, it stores them in a <code>test_results/</code> folder in this code base, using the commit ID as the filename.</p>
+<h2 id="error-handling">Error Handling</h2>
+<p>This CI system includes some simple error handling.</p>
+<p>If you kill the <code>test_runner.py</code> process, <code>dispatcher.py</code> will figure out that the runner is no longer available and will remove it from the pool.</p>
+<p>You can also kill the test runner, to simulate a machine crash or network failure. If you do so, the dispatcher will realize the runner went down and will give another test runner the job if one is available in the pool, or will wait for a new test runner to register itself in the pool.</p>
+<p>If you kill the dispatcher, the repository observer will figure out it went down and will throw an exception. The test runners will also notice, and shut down.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>By separating concerns into their own processes, we were able to build the fundamentals of a distributed continuous integration system. With processes communicating with each other via socket requests, we are able to distribute the system across multiple machines, helping to make our system more reliable and scalable.</p>
+<p>Since the CI system is quite simple now, you can extend it yourself to be far more functional. Here are a few suggestions for improvements:</p>
+<h3 id="per-commit-test-runs">Per-Commit Test Runs</h3>
+<p>The current system will periodically check to see if new commits are run and will run the most recent commit. This should be improved to test each commit. To do this, you can modify the periodic checker to dispatch test runs for each commit in the log between the last-tested and the latest commit.</p>
+<h3 id="smarter-test-runners">Smarter Test Runners</h3>
+<p>If the test runner detects that the dispatcher is unresponsive, it stops running. This happens even when the test runner is in the middle of running tests! It would be better if the test runner waited for a period of time (or indefinitely, if you do not care about resource management) for the dispatcher to come back online. In this case, if the dispatcher goes down while the test runner is actively running a test, instead of shutting down it will complete the test and wait for the dispatcher to come back online, and will report the results to it. This will ensure that we don’t waste any effort the test runner makes, and that we will only run tests once per commit.</p>
+<h3 id="real-reporting">Real Reporting</h3>
+<p>In a real CI system, you would have the test results report to a reporter service which would gather the results, post them somewhere for people to review, and notify a list of interested parties when a failure or other notable event occurs. You can extend our simple CI system by creating a new process to get the reported results, instead of the dispatcher gathering the results. This new process could be a web server (or can connect to a web server) which could post the results online, and may use a mail server to alert subscribers to any test failures.</p>
+<h3 id="test-runner-manager">Test Runner Manager</h3>
+<p>Right now, you have to manually launch the <code>test_runner.py</code> file to start a test runner. Instead, you could create a test runner manager process which would assess the current load of test requests from the dispatcher and scale the number of active test runners accordingly. This process will receive the runtest messages and will start a test runner process for each request, and will kill unused processes when the load decreases.</p>
+<p>Using these suggestions, you can make this simple CI system more robust and fault-tolerant, and you can integrate it with other systems, like a web-based test reporter.</p>
+<p>If you wish to see the level of flexibility continuous integration systems can achieve, I recommend looking into <a href="http://jenkins-ci.org/">Jenkins</a>, a very robust, open-source CI system written in Java. It provides you with a basic CI system which you can extend using plugins. You may also access its source code <a href="https://github.com/jenkinsci/jenkins/">through GitHub</a>. Another recommended project is <a href="https://travis-ci.org/">Travis CI</a>, which is written in Ruby and whose source code is also available <a href="https://github.com/travis-ci/travis-ci">through GitHub</a>.</p>
+<p>This has been an exercise in understanding how CI systems work, and how to build one yourself. You should now have a more solid understanding of what is needed to make a reliable distributed system, and you can now use this knowledge to develop more complex solutions.</p>
+<section class="footnotes" role="doc-endnotes">
+<hr />
+<ol>
+<li id="fn1" role="doc-endnote"><p>Bash is used because we need to check file existence, create files, and use Git, and a shell script is the most direct and easy way to achieve this. Alternatively, there are cross-platform Python packages you can use; for example, Python’s <code>os</code> built-in module can be used for accessing the file system, and GitPython can be used for Git access, but they perform actions in a more roundabout way.<a href="#fnref1" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+</ol>
+</section>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

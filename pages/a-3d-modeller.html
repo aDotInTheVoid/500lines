@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="provenance" content="$Id: index.html 1472 2012-09-21 22:17:41Z audrey $" />
+    <link rel="stylesheet" href="/theme/css/bootstrap.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/bootstrap-responsive.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/code.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/500L.css" type="text/css" />
+    <title>500 Lines or Less | A 3D Modeller</title>
+    <script type="text/x-mathjax-config">
+        MathJax.Hub.Config({
+          tex2jax: {
+            inlineMath: [['$','$'], ['\\(','\\)']],
+            displayMath: [ ['$$','$$'], ["\\[","\\]"] ],
+          },
+        });
+    </script>
+    <script type="text/javascript" src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+    </script>
+</head>
+  <body>
+    <div class="container">
+      <div class="row">
+        <div class="hero-unit">
+	  <a class='pull-right' href='/en/index.html'></a>
+          <h1>A 3D Modeller</h1>
+          <h2 class="author">Erick Dransch</h2>
+          <blockquote class="pull-right">
+            </blockquote>
+
+        </div>
+      </div>
+      <div class="row">
+        <div class='span10 offset1' id='content'>
+          <p><em>Erick is a software developer and 2D and 3D computer graphics enthusiast. He has worked on video games, 3D special effects software, and computer aided design tools. If it involves simulating reality, chances are he’d like to learn more about it. You can find him online at <a href="http://erickdransch.com">erickdransch.com</a>.</em></p>
+<h2 id="introduction">Introduction</h2>
+<p>Humans are innately creative. We continuously design and build novel, useful, and interesting things. In modern times, we write software to assist in the design and creation process. Computer-aided design (CAD) software allows creators to design buildings, bridges, video game art, film monsters, 3D printable objects, and many other things before building a physical version of the design.</p>
+<p>At their core, CAD tools are a method of abstracting the 3-dimensional design into something that can be viewed and edited on a 2-dimensional screen. To fulfill that definition, CAD tools must offer three basic pieces of functionality. Firstly, they must have a data structure to represent the object that’s being designed: this is the computer’s understanding of the 3-dimensional world that the user is building. Secondly, the CAD tool must offer some way to display the design on the user’s screen. The user is designing a physical object with 3 dimensions, but the computer screen has only 2 dimensions. The CAD tool must model how we perceive objects, and draw them to the screen in a way that the user can understand all 3 dimensions of the object. Thirdly, the CAD tool must offer a way to interact with the object being designed. The user must be able to add to and modify the design in order to produce the desired result. Additionally, all tools would need a way to save and load designs from disk so that users can collaborate, share, and save their work.</p>
+<p>A domain-specific CAD tool offers many additional features for the specific requirements of the domain. For example, an architecture CAD tool would offer physics simulations to test climate stresses on the building, a 3D printing tool would have features that check whether the object is actually valid to print, an electrical CAD tool would simulate the physics of electricity running through copper, and a film special effects suite would include features to accurately simulate pyrokinetics.</p>
+<p>However, all CAD tools must include at least the three features discussed above: a data structure to represent the design, the ability to display it to the screen, and a method to interact with the design.</p>
+<p>With that in mind, let’s explore how we can represent a 3D design, display it to the screen, and interact with it, in 500 lines of Python.</p>
+<h2 id="rendering-as-a-guide">Rendering as a Guide</h2>
+<p>The driving force behind many of the design decisions in a 3D modeller is the rendering process. We want to be able to store and render complex objects in our design, but we want to keep the complexity of the rendering code low. Let us examine the rendering process, and explore the data structure for the design that allows us to store and draw arbitarily complex objects with simple rendering logic.</p>
+<h3 id="managing-interfaces-and-the-main-loop">Managing Interfaces and the Main Loop</h3>
+<p>Before we begin rendering, there are a few things we need to set up. First, we need to create a window to display our design in. Secondly, we want to communicate with graphics drivers to render to the screen. We would rather not communicate directly with graphics drivers, so we use a cross-platform abstraction layer called OpenGL, and a library called GLUT (the OpenGL Utility Toolkit) to manage our window.</p>
+<h4 id="a-note-about-opengl">A Note About OpenGL</h4>
+<!-- @mikedebo: Are we going to have actual sidebars in the book? If so we can make this into a sidebar (together with the paragraph on GLUT). Keep in mind sidebars can be hard (but not impossible) to do in ebooks. I wouldn't do sidebars unless there are at least three chapters which use them. -->
+<p>OpenGL is a graphical application programming interface for cross-platform development. It’s the standard API for developing graphics applications across platforms. OpenGL has two major variants: Legacy OpenGL and Modern OpenGL.</p>
+<p>Rendering in OpenGL is based on polygons defined by vertices and normals. For example, to render one side of a cube, we specify the 4 vertices and the normal of the side.</p>
+<p>Legacy OpenGL provides a “fixed function pipeline”. By setting global variables, the programmer can enable and disable automated implementations of features such as lighting, coloring, face culling, etc. OpenGL then automatically renders the scene with the enabled functionality. This functionality is deprecated.</p>
+<p>Modern OpenGL, on the other hand, features a programmable rendering pipeline where the programmer writes small programs called “shaders” that run on dedicated graphics hardware (GPUs). The programmable pipeline of Modern OpenGL has replaced Legacy OpenGL.</p>
+<p>In this project, despite the fact that it is deprecated, we use Legacy OpenGL. The fixed functionality provided by Legacy OpenGL is very useful for keeping code size small. It reduces the amount of linear algebra knowledge required, and it simplifies the code we will write.</p>
+<h4 id="about-glut">About GLUT</h4>
+<p>GLUT, which is bundled with OpenGL, allows us to create operating system windows and to register user interface callbacks. This basic functionality is sufficient for our purposes. If we wanted a more full-featured library for window management and user interaction, we would consider using a full windowing toolkit like GTK or Qt.</p>
+<h4 id="the-viewer">The Viewer</h4>
+<p>To manage the setting up of GLUT and OpenGL, and to drive the rest of the modeller, we create a class called <code>Viewer</code>. We use a single <code>Viewer</code> instance, which manages window creation and rendering, and contains the main loop for our program. In the initialization process for <code>Viewer</code>, we create the GUI window and initialize OpenGL.</p>
+<p>The function <code>init_interface</code> creates the window that the modeller will be rendered into and specifies the function to be called when the design needs to rendered. The <code>init_opengl</code> function sets up the OpenGL state needed for the project. It sets the matrices, enables backface culling, registers a light to illuminate the scene, and tells OpenGL that we would like objects to be colored. The <code>init_scene</code> function creates the <code>Scene</code> objects and places some initial nodes to get the user started. We will see more about the <code>Scene</code> data structure shortly. Finally, <code>init_interaction</code> registers callbacks for user interaction, as we’ll discuss later.</p>
+<p>After initializing <code>Viewer</code>, we call <code>glutMainLoop</code> to transfer program execution to GLUT. This function never returns. The callbacks we have registered on GLUT events will be called when those events occur.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Viewer(<span class="bu">object</span>):</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>):</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Initialize the viewer. &quot;&quot;&quot;</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.init_interface()</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.init_opengl()</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.init_scene()</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.init_interaction()</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>        init_primitives()</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> init_interface(<span class="va">self</span>):</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; initialize the window and register the render function &quot;&quot;&quot;</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>        glutInit()</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>        glutInitWindowSize(<span class="dv">640</span>, <span class="dv">480</span>)</span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a>        glutCreateWindow(<span class="st">&quot;3D Modeller&quot;</span>)</span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>        glutInitDisplayMode(GLUT_SINGLE <span class="op">|</span> GLUT_RGB)</span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a>        glutDisplayFunc(<span class="va">self</span>.render)</span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> init_opengl(<span class="va">self</span>):</span>
+<span id="cb1-19"><a href="#cb1-19" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; initialize the opengl settings to render the scene &quot;&quot;&quot;</span></span>
+<span id="cb1-20"><a href="#cb1-20" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.inverseModelView <span class="op">=</span> numpy.identity(<span class="dv">4</span>)</span>
+<span id="cb1-21"><a href="#cb1-21" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.modelView <span class="op">=</span> numpy.identity(<span class="dv">4</span>)</span>
+<span id="cb1-22"><a href="#cb1-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-23"><a href="#cb1-23" aria-hidden="true" tabindex="-1"></a>        glEnable(GL_CULL_FACE)</span>
+<span id="cb1-24"><a href="#cb1-24" aria-hidden="true" tabindex="-1"></a>        glCullFace(GL_BACK)</span>
+<span id="cb1-25"><a href="#cb1-25" aria-hidden="true" tabindex="-1"></a>        glEnable(GL_DEPTH_TEST)</span>
+<span id="cb1-26"><a href="#cb1-26" aria-hidden="true" tabindex="-1"></a>        glDepthFunc(GL_LESS)</span>
+<span id="cb1-27"><a href="#cb1-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-28"><a href="#cb1-28" aria-hidden="true" tabindex="-1"></a>        glEnable(GL_LIGHT0)</span>
+<span id="cb1-29"><a href="#cb1-29" aria-hidden="true" tabindex="-1"></a>        glLightfv(GL_LIGHT0, GL_POSITION, GLfloat_4(<span class="dv">0</span>, <span class="dv">0</span>, <span class="dv">1</span>, <span class="dv">0</span>))</span>
+<span id="cb1-30"><a href="#cb1-30" aria-hidden="true" tabindex="-1"></a>        glLightfv(GL_LIGHT0, GL_SPOT_DIRECTION, GLfloat_3(<span class="dv">0</span>, <span class="dv">0</span>, <span class="op">-</span><span class="dv">1</span>))</span>
+<span id="cb1-31"><a href="#cb1-31" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-32"><a href="#cb1-32" aria-hidden="true" tabindex="-1"></a>        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)</span>
+<span id="cb1-33"><a href="#cb1-33" aria-hidden="true" tabindex="-1"></a>        glEnable(GL_COLOR_MATERIAL)</span>
+<span id="cb1-34"><a href="#cb1-34" aria-hidden="true" tabindex="-1"></a>        glClearColor(<span class="fl">0.4</span>, <span class="fl">0.4</span>, <span class="fl">0.4</span>, <span class="fl">0.0</span>)</span>
+<span id="cb1-35"><a href="#cb1-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-36"><a href="#cb1-36" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> init_scene(<span class="va">self</span>):</span>
+<span id="cb1-37"><a href="#cb1-37" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; initialize the scene object and initial scene &quot;&quot;&quot;</span></span>
+<span id="cb1-38"><a href="#cb1-38" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scene <span class="op">=</span> Scene()</span>
+<span id="cb1-39"><a href="#cb1-39" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.create_sample_scene()</span>
+<span id="cb1-40"><a href="#cb1-40" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-41"><a href="#cb1-41" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> create_sample_scene(<span class="va">self</span>):</span>
+<span id="cb1-42"><a href="#cb1-42" aria-hidden="true" tabindex="-1"></a>        cube_node <span class="op">=</span> Cube()</span>
+<span id="cb1-43"><a href="#cb1-43" aria-hidden="true" tabindex="-1"></a>        cube_node.translate(<span class="dv">2</span>, <span class="dv">0</span>, <span class="dv">2</span>)</span>
+<span id="cb1-44"><a href="#cb1-44" aria-hidden="true" tabindex="-1"></a>        cube_node.color_index <span class="op">=</span> <span class="dv">2</span></span>
+<span id="cb1-45"><a href="#cb1-45" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scene.add_node(cube_node)</span>
+<span id="cb1-46"><a href="#cb1-46" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-47"><a href="#cb1-47" aria-hidden="true" tabindex="-1"></a>        sphere_node <span class="op">=</span> Sphere()</span>
+<span id="cb1-48"><a href="#cb1-48" aria-hidden="true" tabindex="-1"></a>        sphere_node.translate(<span class="op">-</span><span class="dv">2</span>, <span class="dv">0</span>, <span class="dv">2</span>)</span>
+<span id="cb1-49"><a href="#cb1-49" aria-hidden="true" tabindex="-1"></a>        sphere_node.color_index <span class="op">=</span> <span class="dv">3</span></span>
+<span id="cb1-50"><a href="#cb1-50" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scene.add_node(sphere_node)</span>
+<span id="cb1-51"><a href="#cb1-51" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-52"><a href="#cb1-52" aria-hidden="true" tabindex="-1"></a>        hierarchical_node <span class="op">=</span> SnowFigure()</span>
+<span id="cb1-53"><a href="#cb1-53" aria-hidden="true" tabindex="-1"></a>        hierarchical_node.translate(<span class="op">-</span><span class="dv">2</span>, <span class="dv">0</span>, <span class="op">-</span><span class="dv">2</span>)</span>
+<span id="cb1-54"><a href="#cb1-54" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scene.add_node(hierarchical_node)</span>
+<span id="cb1-55"><a href="#cb1-55" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-56"><a href="#cb1-56" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> init_interaction(<span class="va">self</span>):</span>
+<span id="cb1-57"><a href="#cb1-57" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; init user interaction and callbacks &quot;&quot;&quot;</span></span>
+<span id="cb1-58"><a href="#cb1-58" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.interaction <span class="op">=</span> Interaction()</span>
+<span id="cb1-59"><a href="#cb1-59" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.interaction.register_callback(<span class="st">&#39;pick&#39;</span>, <span class="va">self</span>.pick)</span>
+<span id="cb1-60"><a href="#cb1-60" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.interaction.register_callback(<span class="st">&#39;move&#39;</span>, <span class="va">self</span>.move)</span>
+<span id="cb1-61"><a href="#cb1-61" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.interaction.register_callback(<span class="st">&#39;place&#39;</span>, <span class="va">self</span>.place)</span>
+<span id="cb1-62"><a href="#cb1-62" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.interaction.register_callback(<span class="st">&#39;rotate_color&#39;</span>, <span class="va">self</span>.rotate_color)</span>
+<span id="cb1-63"><a href="#cb1-63" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.interaction.register_callback(<span class="st">&#39;scale&#39;</span>, <span class="va">self</span>.scale)</span>
+<span id="cb1-64"><a href="#cb1-64" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-65"><a href="#cb1-65" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> main_loop(<span class="va">self</span>):</span>
+<span id="cb1-66"><a href="#cb1-66" aria-hidden="true" tabindex="-1"></a>        glutMainLoop()</span>
+<span id="cb1-67"><a href="#cb1-67" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-68"><a href="#cb1-68" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="va">__name__</span> <span class="op">==</span> <span class="st">&quot;__main__&quot;</span>:</span>
+<span id="cb1-69"><a href="#cb1-69" aria-hidden="true" tabindex="-1"></a>    viewer <span class="op">=</span> Viewer()</span>
+<span id="cb1-70"><a href="#cb1-70" aria-hidden="true" tabindex="-1"></a>    viewer.main_loop()</span></code></pre></div>
+<p>Before we dive into the <code>render</code> function, we should discuss a little bit of linear algebra.</p>
+<h3 id="coordinate-space">Coordinate Space</h3>
+<p>For our purposes, a Coordinate Space is an origin point and a set of 3 basis vectors, usually the <span class="math inline">\(x\)</span>, <span class="math inline">\(y\)</span>, and <span class="math inline">\(z\)</span> axes.</p>
+<h3 id="point">Point</h3>
+<p>Any point in 3 dimensions can be represented as an offset in the <span class="math inline">\(x\)</span>, <span class="math inline">\(y\)</span>, and <span class="math inline">\(z\)</span> directions from the origin point. The representation of a point is relative to the coordinate space that the point is in. The same point has different representations in different coordinate spaces. Any point in 3 dimensions can be represented in any 3-dimensional coordinate space.</p>
+<h3 id="vector">Vector</h3>
+<p>A vector is an <span class="math inline">\(x\)</span>, <span class="math inline">\(y\)</span>, and <span class="math inline">\(z\)</span> value representing the difference between two points in the <span class="math inline">\(x\)</span>, <span class="math inline">\(y\)</span>, and <span class="math inline">\(z\)</span> axes, respectively.</p>
+<h3 id="transformation-matrix">Transformation Matrix</h3>
+<p>In computer graphics, it is convenient to use multiple different coordinate spaces for different types of points. Transformation matrices convert points from one coordinate space to another coordinate space. To convert a vector <span class="math inline">\(v\)</span> from one coordinate space to another, we multiply by a transformation matrix <span class="math inline">\(M\)</span>: <span class="math inline">\(v&#39; = M v\)</span>. Some common transformation matrices are translations, scaling, and rotations.</p>
+<h3 id="model-world-view-and-projection-coordinate-spaces">Model, World, View, and Projection Coordinate Spaces</h3>
+<div class="center figure">
+<a name="figure-12.1"></a><img src="modeller-images/newtranspipe.png" alt="Figure 12.1 - Transformation Pipeline" title="Figure 12.1 - Transformation Pipeline" />
+</div>
+<p class="center figcaption">
+<small>Figure 12.1 - Transformation Pipeline</small>
+</p>
+<p>To draw an item to the screen, we need to convert between a few different coordinate spaces.</p>
+<p>The right hand side of <a href="#figure-12.1">Figure 12.1</a><a href="#fn1" class="footnote-ref" id="fnref1" role="doc-noteref"><sup>1</sup></a>, including all of the transformations from Eye Space to Viewport Space will all be handled for us by OpenGL.</p>
+<p>Conversion from eye space to homogeneous clip space is handled by <code>gluPerspective</code>, and conversion to normalized device space and viewport space is handled by <code>glViewport</code>. These two matrices are multiplied together and stored as the GL_PROJECTION matrix. We don’t need to know the terminology or the details of how these matrices work for this project.</p>
+<p>We do, however, need to manage the left hand side of the diagram ourselves. We define a matrix which converts points in the model (also called a mesh) from the model spaces into the world space, called the model matrix. We alse define the view matrix, which converts from the world space into the eye space. In this project, we combine these two matrices to obtain the ModelView matrix.</p>
+<p>To learn more about the full graphics rendering pipeline, and the coordinate spaces involved, refer to chapter 2 of <a href="http://www.realtimerendering.com/"><em>Real Time Rendering</em></a>, or another introductory computer graphics book.</p>
+<h3 id="rendering-with-the-viewer">Rendering with the Viewer</h3>
+<p>The <code>render</code> function begins by setting up any of the OpenGL state that needs to be done at render time. It initializes the projection matrix via <code>init_view</code> and uses data from the interaction member to initialize the ModelView matrix with the transformation matrix that converts from the scene space to world space. We will see more about the Interaction class below. It clears the screen with <code>glClear</code> and it tells the scene to render itself, and then renders the unit grid.</p>
+<p>We disable OpenGL’s lighting before rendering the grid. With lighting disabled, OpenGL renders items with solid colors, rather than simulating a light source. This way, the grid has visual differentiation from the scene. Finally, <code>glFlush</code> signals to the graphics driver that we are ready for the buffer to be flushed and displayed to the screen.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Viewer</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> render(<span class="va">self</span>):</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; The render pass for the scene &quot;&quot;&quot;</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.init_view()</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>        glEnable(GL_LIGHTING)</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>        glClear(GL_COLOR_BUFFER_BIT <span class="op">|</span> GL_DEPTH_BUFFER_BIT)</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Load the modelview matrix from the current state of the trackball</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>        glMatrixMode(GL_MODELVIEW)</span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>        glPushMatrix()</span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>        glLoadIdentity()</span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a>        loc <span class="op">=</span> <span class="va">self</span>.interaction.translation</span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a>        glTranslated(loc[<span class="dv">0</span>], loc[<span class="dv">1</span>], loc[<span class="dv">2</span>])</span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a>        glMultMatrixf(<span class="va">self</span>.interaction.trackball.matrix)</span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a>        <span class="co"># store the inverse of the current modelview.</span></span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a>        currentModelView <span class="op">=</span> numpy.array(glGetFloatv(GL_MODELVIEW_MATRIX))</span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.modelView <span class="op">=</span> numpy.transpose(currentModelView)</span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.inverseModelView <span class="op">=</span> inv(numpy.transpose(currentModelView))</span>
+<span id="cb2-21"><a href="#cb2-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-22"><a href="#cb2-22" aria-hidden="true" tabindex="-1"></a>        <span class="co"># render the scene. This will call the render function for each object</span></span>
+<span id="cb2-23"><a href="#cb2-23" aria-hidden="true" tabindex="-1"></a>        <span class="co"># in the scene</span></span>
+<span id="cb2-24"><a href="#cb2-24" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scene.render()</span>
+<span id="cb2-25"><a href="#cb2-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-26"><a href="#cb2-26" aria-hidden="true" tabindex="-1"></a>        <span class="co"># draw the grid</span></span>
+<span id="cb2-27"><a href="#cb2-27" aria-hidden="true" tabindex="-1"></a>        glDisable(GL_LIGHTING)</span>
+<span id="cb2-28"><a href="#cb2-28" aria-hidden="true" tabindex="-1"></a>        glCallList(G_OBJ_PLANE)</span>
+<span id="cb2-29"><a href="#cb2-29" aria-hidden="true" tabindex="-1"></a>        glPopMatrix()</span>
+<span id="cb2-30"><a href="#cb2-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-31"><a href="#cb2-31" aria-hidden="true" tabindex="-1"></a>        <span class="co"># flush the buffers so that the scene can be drawn</span></span>
+<span id="cb2-32"><a href="#cb2-32" aria-hidden="true" tabindex="-1"></a>        glFlush()</span>
+<span id="cb2-33"><a href="#cb2-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-34"><a href="#cb2-34" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> init_view(<span class="va">self</span>):</span>
+<span id="cb2-35"><a href="#cb2-35" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; initialize the projection matrix &quot;&quot;&quot;</span></span>
+<span id="cb2-36"><a href="#cb2-36" aria-hidden="true" tabindex="-1"></a>        xSize, ySize <span class="op">=</span> glutGet(GLUT_WINDOW_WIDTH), glutGet(GLUT_WINDOW_HEIGHT)</span>
+<span id="cb2-37"><a href="#cb2-37" aria-hidden="true" tabindex="-1"></a>        aspect_ratio <span class="op">=</span> <span class="bu">float</span>(xSize) <span class="op">/</span> <span class="bu">float</span>(ySize)</span>
+<span id="cb2-38"><a href="#cb2-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-39"><a href="#cb2-39" aria-hidden="true" tabindex="-1"></a>        <span class="co"># load the projection matrix. Always the same</span></span>
+<span id="cb2-40"><a href="#cb2-40" aria-hidden="true" tabindex="-1"></a>        glMatrixMode(GL_PROJECTION)</span>
+<span id="cb2-41"><a href="#cb2-41" aria-hidden="true" tabindex="-1"></a>        glLoadIdentity()</span>
+<span id="cb2-42"><a href="#cb2-42" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-43"><a href="#cb2-43" aria-hidden="true" tabindex="-1"></a>        glViewport(<span class="dv">0</span>, <span class="dv">0</span>, xSize, ySize)</span>
+<span id="cb2-44"><a href="#cb2-44" aria-hidden="true" tabindex="-1"></a>        gluPerspective(<span class="dv">70</span>, aspect_ratio, <span class="fl">0.1</span>, <span class="fl">1000.0</span>)</span>
+<span id="cb2-45"><a href="#cb2-45" aria-hidden="true" tabindex="-1"></a>        glTranslated(<span class="dv">0</span>, <span class="dv">0</span>, <span class="op">-</span><span class="dv">15</span>)</span></code></pre></div>
+<h3 id="what-to-render-the-scene">What to Render: The Scene</h3>
+<p>Now that we’ve initialized the rendering pipeline to handle drawing in the world coordinate space, what are we going to render? Recall that our goal is to have a design consisting of 3D models. We need a data structure to contain the design, and we need use this data structure to render the design. Notice above that we call <code>self.scene.render()</code> from the viewer’s render loop. What is the scene?</p>
+<p>The <code>Scene</code> class is the interface to the data structure we use to represent the design. It abstracts away details of the data structure and provides the necessary interface functions required to interact with the design, including functions to render, add items, and manipulate items. There is one <code>Scene</code> object, owned by the viewer. The <code>Scene</code> instance keeps a list of all of the items in the scene, called <code>node_list</code>. It also keeps track of the selected item. The <code>render</code> function on the scene simply calls <code>render</code> on each of the members of <code>node_list</code>.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Scene(<span class="bu">object</span>):</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="co"># the default depth from the camera to place an object at</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    PLACE_DEPTH <span class="op">=</span> <span class="fl">15.0</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>):</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>        <span class="co"># The scene keeps a list of nodes that are displayed</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node_list <span class="op">=</span> <span class="bu">list</span>()</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Keep track of the currently selected node.</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Actions may depend on whether or not something is selected</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.selected_node <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> add_node(<span class="va">self</span>, node):</span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Add a new node to the scene &quot;&quot;&quot;</span></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node_list.append(node)</span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> render(<span class="va">self</span>):</span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Render the scene. &quot;&quot;&quot;</span></span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> node <span class="kw">in</span> <span class="va">self</span>.node_list:</span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a>            node.render()</span></code></pre></div>
+<h3 id="nodes">Nodes</h3>
+<p>In the Scene’s <code>render</code> function, we call <code>render</code> on each of the items in the Scene’s <code>node_list</code>. But what are the elements of that list? We call them <em>nodes</em>. Conceptually, a node is anything that can be placed in the scene. In object-oriented software, we write <code>Node</code> as an abstract base class. Any classes that represent objects to be placed in the <code>Scene</code> will inherit from <code>Node</code>. This base class allows us to reason about the scene abstractly. The rest of the code base doesn’t need to know about the details of the objects it displays; it only needs to know that they are of the class <code>Node</code>.</p>
+<p>Each type of <code>Node</code> defines its own behavior for rendering itself and for any other interactions. The <code>Node</code> keeps track of important data about itself: translation matrix, scale matrix, color, etc. Multiplying the node’s translation matrix by its scaling matrix gives the transformation matrix from the node’s model coordinate space to the world coordinate space. The node also stores an axis-aligned bounding box (AABB). We’ll see more about AABBs when we discuss selection below.</p>
+<p>The simplest concrete implementation of <code>Node</code> is a <em>primitive</em>. A primitive is a single solid shape that can be added the scene. In this project, the primitives are <code>Cube</code> and <code>Sphere</code>.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Node(<span class="bu">object</span>):</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot; Base class for scene elements &quot;&quot;&quot;</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>):</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.color_index <span class="op">=</span> random.randint(color.MIN_COLOR, color.MAX_COLOR)</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.aabb <span class="op">=</span> AABB([<span class="fl">0.0</span>, <span class="fl">0.0</span>, <span class="fl">0.0</span>], [<span class="fl">0.5</span>, <span class="fl">0.5</span>, <span class="fl">0.5</span>])</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.translation_matrix <span class="op">=</span> numpy.identity(<span class="dv">4</span>)</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scaling_matrix <span class="op">=</span> numpy.identity(<span class="dv">4</span>)</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.selected <span class="op">=</span> <span class="va">False</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> render(<span class="va">self</span>):</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; renders the item to the screen &quot;&quot;&quot;</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>        glPushMatrix()</span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>        glMultMatrixf(numpy.transpose(<span class="va">self</span>.translation_matrix))</span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>        glMultMatrixf(<span class="va">self</span>.scaling_matrix)</span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>        cur_color <span class="op">=</span> color.COLORS[<span class="va">self</span>.color_index]</span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a>        glColor3f(cur_color[<span class="dv">0</span>], cur_color[<span class="dv">1</span>], cur_color[<span class="dv">2</span>])</span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="va">self</span>.selected:  <span class="co"># emit light if the node is selected</span></span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a>            glMaterialfv(GL_FRONT, GL_EMISSION, [<span class="fl">0.3</span>, <span class="fl">0.3</span>, <span class="fl">0.3</span>])</span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a>        </span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.render_self()</span>
+<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="va">self</span>.selected:</span>
+<span id="cb4-23"><a href="#cb4-23" aria-hidden="true" tabindex="-1"></a>            glMaterialfv(GL_FRONT, GL_EMISSION, [<span class="fl">0.0</span>, <span class="fl">0.0</span>, <span class="fl">0.0</span>])</span>
+<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a>        glPopMatrix()</span>
+<span id="cb4-25"><a href="#cb4-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-26"><a href="#cb4-26" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> render_self(<span class="va">self</span>):</span>
+<span id="cb4-27"><a href="#cb4-27" aria-hidden="true" tabindex="-1"></a>        <span class="cf">raise</span> <span class="pp">NotImplementedError</span>(</span>
+<span id="cb4-28"><a href="#cb4-28" aria-hidden="true" tabindex="-1"></a>            <span class="st">&quot;The Abstract Node Class doesn&#39;t define &#39;render_self&#39;&quot;</span>)</span>
+<span id="cb4-29"><a href="#cb4-29" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-30"><a href="#cb4-30" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Primitive(Node):</span>
+<span id="cb4-31"><a href="#cb4-31" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>):</span>
+<span id="cb4-32"><a href="#cb4-32" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(Primitive, <span class="va">self</span>).<span class="fu">__init__</span>()</span>
+<span id="cb4-33"><a href="#cb4-33" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.call_list <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb4-34"><a href="#cb4-34" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-35"><a href="#cb4-35" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> render_self(<span class="va">self</span>):</span>
+<span id="cb4-36"><a href="#cb4-36" aria-hidden="true" tabindex="-1"></a>        glCallList(<span class="va">self</span>.call_list)</span>
+<span id="cb4-37"><a href="#cb4-37" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-38"><a href="#cb4-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-39"><a href="#cb4-39" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Sphere(Primitive):</span>
+<span id="cb4-40"><a href="#cb4-40" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot; Sphere primitive &quot;&quot;&quot;</span></span>
+<span id="cb4-41"><a href="#cb4-41" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>):</span>
+<span id="cb4-42"><a href="#cb4-42" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(Sphere, <span class="va">self</span>).<span class="fu">__init__</span>()</span>
+<span id="cb4-43"><a href="#cb4-43" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.call_list <span class="op">=</span> G_OBJ_SPHERE</span>
+<span id="cb4-44"><a href="#cb4-44" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-45"><a href="#cb4-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-46"><a href="#cb4-46" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Cube(Primitive):</span>
+<span id="cb4-47"><a href="#cb4-47" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot; Cube primitive &quot;&quot;&quot;</span></span>
+<span id="cb4-48"><a href="#cb4-48" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>):</span>
+<span id="cb4-49"><a href="#cb4-49" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(Cube, <span class="va">self</span>).<span class="fu">__init__</span>()</span>
+<span id="cb4-50"><a href="#cb4-50" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.call_list <span class="op">=</span> G_OBJ_CUBE</span></code></pre></div>
+<p>Rendering nodes is based on the transformation matrices that each node stores. The transformation matrix for a node is the combination of its scaling matrix and its translation matrix. Regardless of the type of node, the first step to rendering is to set the OpenGL ModelView matrix to the transformation matrix to convert from the model coordinate space to the view coordinate space. Once the OpenGL matrices are up to date, we call <code>render_self</code> to tell the node to make the necessary OpenGL calls to draw itself. Finally, we undo any changes we made to the OpenGL state for this specific node. We use the <code>glPushMatrix</code> and <code>glPopMatrix</code> functions in OpenGL to save and restore the state of the ModelView matrix before and after we render the node. Notice that the node stores its color, location, and scale, and applies these to the OpenGL state before rendering.</p>
+<p>If the node is currently selected, we make it emit light. This way, the user has a visual indication of which node they have selected.</p>
+<p>To render primitives, we use the call lists feature from OpenGL. An OpenGL call list is a series of OpenGL calls that are defined once and bundled together under a single name. The calls can be dispatched with <code>glCallList(LIST_NAME)</code>. Each primitive (<code>Sphere</code> and <code>Cube</code>) defines the call list required to render it (not shown).</p>
+<p>For example, the call list for a cube draws the 6 faces of the cube, with the center at the origin and the edges exactly 1 unit long. </p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Pseudocode Cube definition</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Left face</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>((<span class="op">-</span><span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>), (<span class="op">-</span><span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>, <span class="fl">0.5</span>), (<span class="op">-</span><span class="fl">0.5</span>, <span class="fl">0.5</span>, <span class="fl">0.5</span>), (<span class="op">-</span><span class="fl">0.5</span>, <span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>)),</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Back face</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>((<span class="op">-</span><span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>), (<span class="op">-</span><span class="fl">0.5</span>, <span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>), (<span class="fl">0.5</span>, <span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>), (<span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>)),</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Right face</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>((<span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>), (<span class="fl">0.5</span>, <span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>), (<span class="fl">0.5</span>, <span class="fl">0.5</span>, <span class="fl">0.5</span>), (<span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>, <span class="fl">0.5</span>)),</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a><span class="co"># Front face</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>((<span class="op">-</span><span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>, <span class="fl">0.5</span>), (<span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>, <span class="fl">0.5</span>), (<span class="fl">0.5</span>, <span class="fl">0.5</span>, <span class="fl">0.5</span>), (<span class="op">-</span><span class="fl">0.5</span>, <span class="fl">0.5</span>, <span class="fl">0.5</span>)),</span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a><span class="co"># Bottom face</span></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a>((<span class="op">-</span><span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>, <span class="fl">0.5</span>), (<span class="op">-</span><span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>), (<span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>), (<span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>, <span class="fl">0.5</span>)),</span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a><span class="co"># Top face</span></span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a>((<span class="op">-</span><span class="fl">0.5</span>, <span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>), (<span class="op">-</span><span class="fl">0.5</span>, <span class="fl">0.5</span>, <span class="fl">0.5</span>), (<span class="fl">0.5</span>, <span class="fl">0.5</span>, <span class="fl">0.5</span>), (<span class="fl">0.5</span>, <span class="fl">0.5</span>, <span class="op">-</span><span class="fl">0.5</span>))</span></code></pre></div>
+<p>Using only primitives would be quite limiting for modelling applications. 3D models are generally made up of multiple primitives (or triangular meshes, which are outside the scope of this project). Fortunately, our design of the <code>Node</code> class facilitates <code>Scene</code> nodes that are made up of multiple primitives. In fact, we can support arbitrary groupings of nodes with no added complexity.</p>
+<p>As motivation, let us consider a very basic figure: a typical snowman, or snow figure, made up of three spheres. Even though the figure is comprised of three separate primitives, we would like to be able to treat it as a single object.</p>
+<p>We create a class called <code>HierarchicalNode</code>, a <code>Node</code> that contains other nodes. It manages a list of “children”. The <code>render_self</code> function for hierarchical nodes simply calls <code>render_self</code> on each of the child nodes. With the <code>HierarchicalNode</code> class, it is very easy to add figures to the scene. Now, defining the snow figure is as simple as specifying the shapes that comprise it, and their relative positions and sizes.</p>
+<div class="center figure">
+<a name="figure-12.2"></a><img src="modeller-images/nodes.jpg" alt="Figure 12.2 - Hierarchy of `Node` subclasses" title="Figure 12.2 - Hierarchy of `Node` subclasses" />
+</div>
+<p class="center figcaption">
+<small>Figure 12.2 - Hierarchy of <code>Node</code> subclasses</small>
+</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> HierarchicalNode(Node):</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>):</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(HierarchicalNode, <span class="va">self</span>).<span class="fu">__init__</span>()</span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.child_nodes <span class="op">=</span> []</span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> render_self(<span class="va">self</span>):</span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> child <span class="kw">in</span> <span class="va">self</span>.child_nodes:</span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a>            child.render()</span></code></pre></div>
+<div class="sourceCode" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> SnowFigure(HierarchicalNode):</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>):</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(SnowFigure, <span class="va">self</span>).<span class="fu">__init__</span>()</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.child_nodes <span class="op">=</span> [Sphere(), Sphere(), Sphere()]</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.child_nodes[<span class="dv">0</span>].translate(<span class="dv">0</span>, <span class="op">-</span><span class="fl">0.6</span>, <span class="dv">0</span>) <span class="co"># scale 1.0</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.child_nodes[<span class="dv">1</span>].translate(<span class="dv">0</span>, <span class="fl">0.1</span>, <span class="dv">0</span>)</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.child_nodes[<span class="dv">1</span>].scaling_matrix <span class="op">=</span> numpy.dot(</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.scaling_matrix, scaling([<span class="fl">0.8</span>, <span class="fl">0.8</span>, <span class="fl">0.8</span>]))</span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.child_nodes[<span class="dv">2</span>].translate(<span class="dv">0</span>, <span class="fl">0.75</span>, <span class="dv">0</span>)</span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.child_nodes[<span class="dv">2</span>].scaling_matrix <span class="op">=</span> numpy.dot(</span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.scaling_matrix, scaling([<span class="fl">0.7</span>, <span class="fl">0.7</span>, <span class="fl">0.7</span>]))</span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> child_node <span class="kw">in</span> <span class="va">self</span>.child_nodes:</span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a>            child_node.color_index <span class="op">=</span> color.MIN_COLOR</span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.aabb <span class="op">=</span> AABB([<span class="fl">0.0</span>, <span class="fl">0.0</span>, <span class="fl">0.0</span>], [<span class="fl">0.5</span>, <span class="fl">1.1</span>, <span class="fl">0.5</span>])</span></code></pre></div>
+<p>You might observe that the <code>Node</code> objects form a tree data structure. The <code>render</code> function, through hierarchical nodes, does a depth-first traversal through the tree. As it traverses, it keeps a stack of <code>ModelView</code> matrices, used for conversion into the world space. At each step, it pushes the current <code>ModelView</code> matrix onto the stack, and when it completes rendering of all child nodes, it pops the matrix off the stack, leaving the parent node’s <code>ModelView</code> matrix at the top of the stack.</p>
+<p>By making the <code>Node</code> class extensible in this way, we can add new types of shapes to the scene without changing any of the other code for scene manipulation and rendering. Using the node concept to abstract away the fact that one <code>Scene</code> object may have many children is known as the Composite design pattern.</p>
+<h3 id="user-interaction">User Interaction</h3>
+<p>Now that our modeller is capable of storing and displaying the scene, we need a way to interact with it. There are two types of interactions that we need to facilitate. First, we need the capability of changing the viewing perspective of the scene. We want to be able to move the eye, or camera, around the scene. Second, we need to be able to add new nodes and to modify nodes in the scene.</p>
+<p>To enable user interaction, we need to know when the user presses keys or moves the mouse. Luckily, the operating system already knows when these events happen. GLUT allows us to register a function to be called whenever a certain event occurs. We write functions to interpret key presses and mouse movement, and tell GLUT to call those functions when the corresponding keys are pressed. Once we know which keys the user is pressing, we need to interpret the input and apply the intended actions to the scene.</p>
+<p>The logic for listening to operating system events and interpreting their meaning is found in the <code>Interaction</code> class. The <code>Viewer</code> class we wrote earlier owns the single instance of <code>Interaction</code>. We will use the GLUT callback mechanism to register functions to be called when a mouse button is pressed (<code>glutMouseFunc</code>), when the mouse is moved (<code>glutMotionFunc</code>), when a keyboard button is pressed (<code>glutKeyboardFunc</code>), and when the arrow keys are pressed (<code>glutSpecialFunc</code>). We’ll see the functions that handle input events shortly.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Interaction(<span class="bu">object</span>):</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>):</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Handles user interaction &quot;&quot;&quot;</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>        <span class="co"># currently pressed mouse button</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.pressed <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>        <span class="co"># the current location of the camera</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.translation <span class="op">=</span> [<span class="dv">0</span>, <span class="dv">0</span>, <span class="dv">0</span>, <span class="dv">0</span>]</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>        <span class="co"># the trackball to calculate rotation</span></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.trackball <span class="op">=</span> trackball.Trackball(theta <span class="op">=</span> <span class="op">-</span><span class="dv">25</span>, distance<span class="op">=</span><span class="dv">15</span>)</span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>        <span class="co"># the current mouse location</span></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.mouse_loc <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Unsophisticated callback mechanism</span></span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.callbacks <span class="op">=</span> defaultdict(<span class="bu">list</span>)</span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>        </span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.register()</span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> register(<span class="va">self</span>):</span>
+<span id="cb8-18"><a href="#cb8-18" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; register callbacks with glut &quot;&quot;&quot;</span></span>
+<span id="cb8-19"><a href="#cb8-19" aria-hidden="true" tabindex="-1"></a>        glutMouseFunc(<span class="va">self</span>.handle_mouse_button)</span>
+<span id="cb8-20"><a href="#cb8-20" aria-hidden="true" tabindex="-1"></a>        glutMotionFunc(<span class="va">self</span>.handle_mouse_move)</span>
+<span id="cb8-21"><a href="#cb8-21" aria-hidden="true" tabindex="-1"></a>        glutKeyboardFunc(<span class="va">self</span>.handle_keystroke)</span>
+<span id="cb8-22"><a href="#cb8-22" aria-hidden="true" tabindex="-1"></a>        glutSpecialFunc(<span class="va">self</span>.handle_keystroke)</span></code></pre></div>
+<h4 id="operating-system-callbacks">Operating System Callbacks</h4>
+<p>In order to meaningfully interpret user input, we need to combine knowledge of the mouse position, mouse buttons, and keyboard. Because interpreting user input into meaningful actions requires many lines of code, we encapsulate it in a separate class, away from the main code path. The <code>Interaction</code> class hides unrelated complexity from the rest of the codebase and translates operating system events into application-level events.</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Interaction </span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> translate(<span class="va">self</span>, x, y, z):</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; translate the camera &quot;&quot;&quot;</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.translation[<span class="dv">0</span>] <span class="op">+=</span> x</span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.translation[<span class="dv">1</span>] <span class="op">+=</span> y</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.translation[<span class="dv">2</span>] <span class="op">+=</span> z</span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> handle_mouse_button(<span class="va">self</span>, button, mode, x, y):</span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Called when the mouse button is pressed or released &quot;&quot;&quot;</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>        xSize, ySize <span class="op">=</span> glutGet(GLUT_WINDOW_WIDTH), glutGet(GLUT_WINDOW_HEIGHT)</span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a>        y <span class="op">=</span> ySize <span class="op">-</span> y  <span class="co"># invert the y coordinate because OpenGL is inverted</span></span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.mouse_loc <span class="op">=</span> (x, y)</span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> mode <span class="op">==</span> GLUT_DOWN:</span>
+<span id="cb9-15"><a href="#cb9-15" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.pressed <span class="op">=</span> button</span>
+<span id="cb9-16"><a href="#cb9-16" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> button <span class="op">==</span> GLUT_RIGHT_BUTTON:</span>
+<span id="cb9-17"><a href="#cb9-17" aria-hidden="true" tabindex="-1"></a>                <span class="cf">pass</span></span>
+<span id="cb9-18"><a href="#cb9-18" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> button <span class="op">==</span> GLUT_LEFT_BUTTON:  <span class="co"># pick</span></span>
+<span id="cb9-19"><a href="#cb9-19" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.trigger(<span class="st">&#39;pick&#39;</span>, x, y)</span>
+<span id="cb9-20"><a href="#cb9-20" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> button <span class="op">==</span> <span class="dv">3</span>:  <span class="co"># scroll up</span></span>
+<span id="cb9-21"><a href="#cb9-21" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.translate(<span class="dv">0</span>, <span class="dv">0</span>, <span class="fl">1.0</span>)</span>
+<span id="cb9-22"><a href="#cb9-22" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> button <span class="op">==</span> <span class="dv">4</span>:  <span class="co"># scroll up</span></span>
+<span id="cb9-23"><a href="#cb9-23" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.translate(<span class="dv">0</span>, <span class="dv">0</span>, <span class="op">-</span><span class="fl">1.0</span>)</span>
+<span id="cb9-24"><a href="#cb9-24" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:  <span class="co"># mouse button release</span></span>
+<span id="cb9-25"><a href="#cb9-25" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.pressed <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb9-26"><a href="#cb9-26" aria-hidden="true" tabindex="-1"></a>        glutPostRedisplay()</span>
+<span id="cb9-27"><a href="#cb9-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-28"><a href="#cb9-28" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> handle_mouse_move(<span class="va">self</span>, x, screen_y):</span>
+<span id="cb9-29"><a href="#cb9-29" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Called when the mouse is moved &quot;&quot;&quot;</span></span>
+<span id="cb9-30"><a href="#cb9-30" aria-hidden="true" tabindex="-1"></a>        xSize, ySize <span class="op">=</span> glutGet(GLUT_WINDOW_WIDTH), glutGet(GLUT_WINDOW_HEIGHT)</span>
+<span id="cb9-31"><a href="#cb9-31" aria-hidden="true" tabindex="-1"></a>        y <span class="op">=</span> ySize <span class="op">-</span> screen_y  <span class="co"># invert the y coordinate because OpenGL is inverted</span></span>
+<span id="cb9-32"><a href="#cb9-32" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="va">self</span>.pressed <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb9-33"><a href="#cb9-33" aria-hidden="true" tabindex="-1"></a>            dx <span class="op">=</span> x <span class="op">-</span> <span class="va">self</span>.mouse_loc[<span class="dv">0</span>]</span>
+<span id="cb9-34"><a href="#cb9-34" aria-hidden="true" tabindex="-1"></a>            dy <span class="op">=</span> y <span class="op">-</span> <span class="va">self</span>.mouse_loc[<span class="dv">1</span>]</span>
+<span id="cb9-35"><a href="#cb9-35" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="va">self</span>.pressed <span class="op">==</span> GLUT_RIGHT_BUTTON <span class="kw">and</span> <span class="va">self</span>.trackball <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb9-36"><a href="#cb9-36" aria-hidden="true" tabindex="-1"></a>                <span class="co"># ignore the updated camera loc because we want to always</span></span>
+<span id="cb9-37"><a href="#cb9-37" aria-hidden="true" tabindex="-1"></a>                <span class="co"># rotate around the origin</span></span>
+<span id="cb9-38"><a href="#cb9-38" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.trackball.drag_to(<span class="va">self</span>.mouse_loc[<span class="dv">0</span>], <span class="va">self</span>.mouse_loc[<span class="dv">1</span>], dx, dy)</span>
+<span id="cb9-39"><a href="#cb9-39" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> <span class="va">self</span>.pressed <span class="op">==</span> GLUT_LEFT_BUTTON:</span>
+<span id="cb9-40"><a href="#cb9-40" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.trigger(<span class="st">&#39;move&#39;</span>, x, y)</span>
+<span id="cb9-41"><a href="#cb9-41" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> <span class="va">self</span>.pressed <span class="op">==</span> GLUT_MIDDLE_BUTTON:</span>
+<span id="cb9-42"><a href="#cb9-42" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.translate(dx<span class="op">/</span><span class="fl">60.0</span>, dy<span class="op">/</span><span class="fl">60.0</span>, <span class="dv">0</span>)</span>
+<span id="cb9-43"><a href="#cb9-43" aria-hidden="true" tabindex="-1"></a>            <span class="cf">else</span>:</span>
+<span id="cb9-44"><a href="#cb9-44" aria-hidden="true" tabindex="-1"></a>                <span class="cf">pass</span></span>
+<span id="cb9-45"><a href="#cb9-45" aria-hidden="true" tabindex="-1"></a>            glutPostRedisplay()</span>
+<span id="cb9-46"><a href="#cb9-46" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.mouse_loc <span class="op">=</span> (x, y)</span>
+<span id="cb9-47"><a href="#cb9-47" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-48"><a href="#cb9-48" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> handle_keystroke(<span class="va">self</span>, key, x, screen_y):</span>
+<span id="cb9-49"><a href="#cb9-49" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Called on keyboard input from the user &quot;&quot;&quot;</span></span>
+<span id="cb9-50"><a href="#cb9-50" aria-hidden="true" tabindex="-1"></a>        xSize, ySize <span class="op">=</span> glutGet(GLUT_WINDOW_WIDTH), glutGet(GLUT_WINDOW_HEIGHT)</span>
+<span id="cb9-51"><a href="#cb9-51" aria-hidden="true" tabindex="-1"></a>        y <span class="op">=</span> ySize <span class="op">-</span> screen_y</span>
+<span id="cb9-52"><a href="#cb9-52" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> key <span class="op">==</span> <span class="st">&#39;s&#39;</span>:</span>
+<span id="cb9-53"><a href="#cb9-53" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.trigger(<span class="st">&#39;place&#39;</span>, <span class="st">&#39;sphere&#39;</span>, x, y)</span>
+<span id="cb9-54"><a href="#cb9-54" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> key <span class="op">==</span> <span class="st">&#39;c&#39;</span>:</span>
+<span id="cb9-55"><a href="#cb9-55" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.trigger(<span class="st">&#39;place&#39;</span>, <span class="st">&#39;cube&#39;</span>, x, y)</span>
+<span id="cb9-56"><a href="#cb9-56" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> key <span class="op">==</span> GLUT_KEY_UP:</span>
+<span id="cb9-57"><a href="#cb9-57" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.trigger(<span class="st">&#39;scale&#39;</span>, up<span class="op">=</span><span class="va">True</span>)</span>
+<span id="cb9-58"><a href="#cb9-58" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> key <span class="op">==</span> GLUT_KEY_DOWN:</span>
+<span id="cb9-59"><a href="#cb9-59" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.trigger(<span class="st">&#39;scale&#39;</span>, up<span class="op">=</span><span class="va">False</span>)</span>
+<span id="cb9-60"><a href="#cb9-60" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> key <span class="op">==</span> GLUT_KEY_LEFT:</span>
+<span id="cb9-61"><a href="#cb9-61" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.trigger(<span class="st">&#39;rotate_color&#39;</span>, forward<span class="op">=</span><span class="va">True</span>)</span>
+<span id="cb9-62"><a href="#cb9-62" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> key <span class="op">==</span> GLUT_KEY_RIGHT:</span>
+<span id="cb9-63"><a href="#cb9-63" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.trigger(<span class="st">&#39;rotate_color&#39;</span>, forward<span class="op">=</span><span class="va">False</span>)</span>
+<span id="cb9-64"><a href="#cb9-64" aria-hidden="true" tabindex="-1"></a>        glutPostRedisplay()</span></code></pre></div>
+<h4 id="internal-callbacks">Internal Callbacks</h4>
+<p>In the code snippet above, you will notice that when the <code>Interaction</code> instance interprets a user action, it calls <code>self.trigger</code> with a string describing the action type. The <code>trigger</code> function on the <code>Interaction</code> class is part of a simple callback system that we will use for handling application-level events. Recall that the <code>init_interaction</code> function on the <code>Viewer</code> class registers callbacks on the <code>Interaction</code> instance by calling <code>register_callback</code>.</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Interaction</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> register_callback(<span class="va">self</span>, name, func):</span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.callbacks[name].append(func)</span></code></pre></div>
+<p>When user interface code needs to trigger an event on the scene, the <code>Interaction</code> class calls all of the saved callbacks it has for that specific event:</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Interaction</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> trigger(<span class="va">self</span>, name, <span class="op">*</span>args, <span class="op">**</span>kwargs):</span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> func <span class="kw">in</span> <span class="va">self</span>.callbacks[name]:</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>            func(<span class="op">*</span>args, <span class="op">**</span>kwargs)</span></code></pre></div>
+<p>This application-level callback system abstracts away the need for the rest of the system to know about operating system input. Each application-level callback represents a meaningful request within the application. The <code>Interaction</code> class acts as a translator between operating system events and application-level events. This means that if we decided to port the modeller to another toolkit in addition to GLUT, we would only need to replace the <code>Interaction</code> class with a class that converts the input from the new toolkit into the same set of meaningful application-level callbacks. We use callbacks and arguments in Table 12.1.</p>
+<table style="width:100%;">
+<caption><b>Table 12.1</b> - Interaction callbacks and arguments</caption>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 44%" />
+<col style="width: 22%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">Callback</th>
+<th style="text-align: left;">Arguments</th>
+<th style="text-align: left;">Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;"><code>pick</code></td>
+<td style="text-align: left;">x:number, y:number</td>
+<td style="text-align: left;">Selects the node at the mouse pointer location.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;"><code>move</code></td>
+<td style="text-align: left;">x:number, y:number</td>
+<td style="text-align: left;">Moves the currently selected node to the mouse pointer location.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;"><code>place</code></td>
+<td style="text-align: left;">shape:string, x:number, y:number</td>
+<td style="text-align: left;">Places a shape of the specified type at the mouse pointer location.</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;"><code>rotate_color</code></td>
+<td style="text-align: left;">forward:boolean</td>
+<td style="text-align: left;">Rotates the color of the currently selected node through the list of colors, forwards or backwards.</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;"><code>scale</code></td>
+<td style="text-align: left;">up:boolean</td>
+<td style="text-align: left;">Scales the currently selected node up or down, according to parameter.</td>
+</tr>
+</tbody>
+</table>
+<p>This simple callback system provides all of the functionality we need for this project. In a production 3D modeller, however, user interface objects are often created and destroyed dynamically. In that case, we would need a more sophisticated event listening system, where objects can both register and un-register callbacks for events.</p>
+<h3 id="interfacing-with-the-scene">Interfacing with the Scene</h3>
+<p>With our callback mechanism, we can receive meaningful information about user input events from the <code>Interaction</code> class. We are ready to apply these actions to the <code>Scene</code>.</p>
+<h4 id="moving-the-scene">Moving the Scene</h4>
+<p>In this project, we accomplish camera motion by transforming the scene. In other words, the camera is at a fixed location and user input moves the scene instead of moving the camera. The camera is placed at <code>[0, 0, -15]</code> and faces the world space origin. (Alternatively, we could change the perspective matrix to move the camera instead of the scene. This design decision has very little impact on the rest of the project.) Revisiting the <code>render</code> function in the <code>Viewer</code>, we see that the <code>Interaction</code> state is used to transform the OpenGL matrix state before rendering the <code>Scene</code>. There are two types of interaction with the scene: rotation and translation.</p>
+<h4 id="rotating-the-scene-with-a-trackball">Rotating the Scene with a Trackball</h4>
+<p>We accomplish rotation of the scene by using a <em>trackball</em> algorithm. The trackball is an intuitive interface for manipulating the scene in three dimensions. Conceptually, a trackball interface functions as if the scene was inside a transparent globe. Placing a hand on the surface of the globe and pushing it rotates the globe. Similarly, clicking the right mouse button and moving it on the screen rotates the scene. You can find out more about the theory of the trackball at the <a href="http://www.opengl.org/wiki/Object_Mouse_Trackball">OpenGL Wiki</a>. In this project, we use a trackball implementation provided as part of <a href="https://code.google.com/p/glumpy/source/browse/glumpy/trackball.py">Glumpy</a>.</p>
+<p>We interact with the trackball using the <code>drag_to</code> function, with the current location of the mouse as the starting location and the change in mouse location as parameters.</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="va">self</span>.trackball.drag_to(<span class="va">self</span>.mouse_loc[<span class="dv">0</span>], <span class="va">self</span>.mouse_loc[<span class="dv">1</span>], dx, dy)</span></code></pre></div>
+<p>The resulting rotation matrix is <code>trackball.matrix</code> in the viewer when the scene is rendered.</p>
+<h4 id="aside-quaternions">Aside: Quaternions</h4>
+<p>Rotations are traditionally represented in one of two ways. The first is a rotation value around each axis; you could store this as a 3-tuple of floating point numbers. The other common representation for rotations is a quaternion, an element composed of a vector with <span class="math inline">\(x\)</span>, <span class="math inline">\(y\)</span>, and <span class="math inline">\(z\)</span> coordinates, and a <span class="math inline">\(w\)</span> rotation. Using quaternions has numerous benefits over per-axis rotation; in particular, they are more numerically stable. Using quaternions avoids problems like gimbal lock. The downside of quaternions is that they are less intuitive to work with and harder to understand. If you are brave and would like to learn more about quaternions, you can refer to <a href="http://3dgep.com/?p=1815">this explanation</a>.</p>
+<p>The trackball implementation avoids gimbal lock by using quaternions internally to store the rotation of the scene. Luckily, we do not need to work with quaternions directly, because the matrix member on the trackball converts the rotation to a matrix.</p>
+<h4 id="translating-the-scene">Translating the Scene</h4>
+<p>Translating the scene (i.e., sliding it) is much simpler than rotating it. Scene translations are provided with the mouse wheel and the left mouse button. The left mouse button translates the scene in the <span class="math inline">\(x\)</span> and <span class="math inline">\(y\)</span> coordinates. Scrolling the mouse wheel translates the scene in the z coordinate (towards or away from the camera). The <code>Interaction</code> class stores the current scene translation and modifies it with the <code>translate</code> function. The viewer retrieves the <code>Interaction</code> camera location during rendering to use in a <code>glTranslated</code> call.</p>
+<h4 id="selecting-scene-objects">Selecting Scene Objects</h4>
+<p>Now that the user can move and rotate the entire scene to get the perspective they want, the next step is to allow the user to modify and manipulate the objects that make up the scene.</p>
+<p>In order for the user to manipulate objects in the scene, they need to be able to select items.</p>
+<p>To select an item, we use the current projection matrix to generate a ray that represents the mouse click, as if the mouse pointer shoots a ray into the scene. The selected node is the closest node to the camera with which the ray intersects. Thus the problem of picking reduced to the problem of finding intersections between a ray and nodes in the scene. So the question is: How do we tell if the ray hits a node?</p>
+<p>Calculating exactly whether a ray intersects with a node is a challenging problem in terms of both complexity of code and of performance. We would need to write a ray-object intersection check for each type of primitive. For scene nodes with complex mesh geometries with many faces, calculating exact ray-object intersection would require testing the ray against each face and would be computationally expensive.</p>
+<p>For the purposes of keeping the code compact and performance reasonable, we use a simple, fast approximation for the ray-object intersection test. In our implementation, each node stores an axis-aligned bounding box (AABB), which is an approximation of the space it occupies. To test whether a ray intersects with a node, we test whether the ray intersects with the node’s AABB. This implementation means that all nodes share the same code for intersection tests, and it means that the performance cost is constant and small for all node types.</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Viewer</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> get_ray(<span class="va">self</span>, x, y):</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; </span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a><span class="co">        Generate a ray beginning at the near plane, in the direction that</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a><span class="co">        the x, y coordinates are facing </span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a><span class="co">        Consumes: x, y coordinates of mouse on screen </span></span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a><span class="co">        Return: start, direction of the ray </span></span>
+<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a><span class="co">        &quot;&quot;&quot;</span></span>
+<span id="cb13-10"><a href="#cb13-10" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.init_view()</span>
+<span id="cb13-11"><a href="#cb13-11" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb13-12"><a href="#cb13-12" aria-hidden="true" tabindex="-1"></a>        glMatrixMode(GL_MODELVIEW)</span>
+<span id="cb13-13"><a href="#cb13-13" aria-hidden="true" tabindex="-1"></a>        glLoadIdentity()</span>
+<span id="cb13-14"><a href="#cb13-14" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb13-15"><a href="#cb13-15" aria-hidden="true" tabindex="-1"></a>        <span class="co"># get two points on the line.</span></span>
+<span id="cb13-16"><a href="#cb13-16" aria-hidden="true" tabindex="-1"></a>        start <span class="op">=</span> numpy.array(gluUnProject(x, y, <span class="fl">0.001</span>))</span>
+<span id="cb13-17"><a href="#cb13-17" aria-hidden="true" tabindex="-1"></a>        end <span class="op">=</span> numpy.array(gluUnProject(x, y, <span class="fl">0.999</span>))</span>
+<span id="cb13-18"><a href="#cb13-18" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb13-19"><a href="#cb13-19" aria-hidden="true" tabindex="-1"></a>        <span class="co"># convert those points into a ray</span></span>
+<span id="cb13-20"><a href="#cb13-20" aria-hidden="true" tabindex="-1"></a>        direction <span class="op">=</span> end <span class="op">-</span> start</span>
+<span id="cb13-21"><a href="#cb13-21" aria-hidden="true" tabindex="-1"></a>        direction <span class="op">=</span> direction <span class="op">/</span> norm(direction)</span>
+<span id="cb13-22"><a href="#cb13-22" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb13-23"><a href="#cb13-23" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> (start, direction)</span>
+<span id="cb13-24"><a href="#cb13-24" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb13-25"><a href="#cb13-25" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> pick(<span class="va">self</span>, x, y):</span>
+<span id="cb13-26"><a href="#cb13-26" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Execute pick of an object. Selects an object in the scene. &quot;&quot;&quot;</span></span>
+<span id="cb13-27"><a href="#cb13-27" aria-hidden="true" tabindex="-1"></a>        start, direction <span class="op">=</span> <span class="va">self</span>.get_ray(x, y)</span>
+<span id="cb13-28"><a href="#cb13-28" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scene.pick(start, direction, <span class="va">self</span>.modelView)</span></code></pre></div>
+<p>To determine which node was clicked on, we traverse the scene to test whether the ray hits any nodes. We deselect the currently selected node and then choose the node with the intersection closest to the ray origin.</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Scene</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> pick(<span class="va">self</span>, start, direction, mat):</span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; </span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a><span class="co">        Execute selection.</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a><span class="co">            </span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a><span class="co">        start, direction describe a Ray. </span></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a><span class="co">        mat is the inverse of the current modelview matrix for the scene.</span></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a><span class="co">        &quot;&quot;&quot;</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="va">self</span>.selected_node <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.selected_node.select(<span class="va">False</span>)</span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.selected_node <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Keep track of the closest hit.</span></span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a>        mindist <span class="op">=</span> sys.maxint</span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a>        closest_node <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb14-16"><a href="#cb14-16" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> node <span class="kw">in</span> <span class="va">self</span>.node_list:</span>
+<span id="cb14-17"><a href="#cb14-17" aria-hidden="true" tabindex="-1"></a>            hit, distance <span class="op">=</span> node.pick(start, direction, mat)</span>
+<span id="cb14-18"><a href="#cb14-18" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> hit <span class="kw">and</span> distance <span class="op">&lt;</span> mindist:</span>
+<span id="cb14-19"><a href="#cb14-19" aria-hidden="true" tabindex="-1"></a>                mindist, closest_node <span class="op">=</span> distance, node</span>
+<span id="cb14-20"><a href="#cb14-20" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb14-21"><a href="#cb14-21" aria-hidden="true" tabindex="-1"></a>        <span class="co"># If we hit something, keep track of it.</span></span>
+<span id="cb14-22"><a href="#cb14-22" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> closest_node <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb14-23"><a href="#cb14-23" aria-hidden="true" tabindex="-1"></a>            closest_node.select()</span>
+<span id="cb14-24"><a href="#cb14-24" aria-hidden="true" tabindex="-1"></a>            closest_node.depth <span class="op">=</span> mindist</span>
+<span id="cb14-25"><a href="#cb14-25" aria-hidden="true" tabindex="-1"></a>            closest_node.selected_loc <span class="op">=</span> start <span class="op">+</span> direction <span class="op">*</span> mindist</span>
+<span id="cb14-26"><a href="#cb14-26" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.selected_node <span class="op">=</span> closest_node</span></code></pre></div>
+<p>Within the <code>Node</code> class, the <code>pick</code> function tests whether the ray intersects with the axis-aligned bounding box of the <code>Node</code>. If a node is selected, the <code>select</code> function toggles the selected state of the node. Notice that the AABB’s <code>ray_hit</code> function accepts the transformation matrix between the box’s coordinate space and the ray’s coordinate space as the third parameter. Each node applies its own transformation to the matrix before making the <code>ray_hit</code> function call.</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Node</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> pick(<span class="va">self</span>, start, direction, mat):</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; </span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="co">        Return whether or not the ray hits the object</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a><span class="co">        Consume:  </span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a><span class="co">        start, direction form the ray to check</span></span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a><span class="co">        mat is the modelview matrix to transform the ray by </span></span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a><span class="co">        &quot;&quot;&quot;</span></span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a>        <span class="co"># transform the modelview matrix by the current translation</span></span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a>        newmat <span class="op">=</span> numpy.dot(</span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a>            numpy.dot(mat, <span class="va">self</span>.translation_matrix), </span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a>            numpy.linalg.inv(<span class="va">self</span>.scaling_matrix)</span>
+<span id="cb15-15"><a href="#cb15-15" aria-hidden="true" tabindex="-1"></a>        )</span>
+<span id="cb15-16"><a href="#cb15-16" aria-hidden="true" tabindex="-1"></a>        results <span class="op">=</span> <span class="va">self</span>.aabb.ray_hit(start, direction, newmat)</span>
+<span id="cb15-17"><a href="#cb15-17" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> results</span>
+<span id="cb15-18"><a href="#cb15-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-19"><a href="#cb15-19" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> select(<span class="va">self</span>, select<span class="op">=</span><span class="va">None</span>):</span>
+<span id="cb15-20"><a href="#cb15-20" aria-hidden="true" tabindex="-1"></a>       <span class="co">&quot;&quot;&quot; Toggles or sets selected state &quot;&quot;&quot;</span></span>
+<span id="cb15-21"><a href="#cb15-21" aria-hidden="true" tabindex="-1"></a>       <span class="cf">if</span> select <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb15-22"><a href="#cb15-22" aria-hidden="true" tabindex="-1"></a>           <span class="va">self</span>.selected <span class="op">=</span> select</span>
+<span id="cb15-23"><a href="#cb15-23" aria-hidden="true" tabindex="-1"></a>       <span class="cf">else</span>:</span>
+<span id="cb15-24"><a href="#cb15-24" aria-hidden="true" tabindex="-1"></a>           <span class="va">self</span>.selected <span class="op">=</span> <span class="kw">not</span> <span class="va">self</span>.selected</span>
+<span id="cb15-25"><a href="#cb15-25" aria-hidden="true" tabindex="-1"></a>    </span></code></pre></div>
+<p>The ray-AABB selection approach is very simple to understand and implement. However, the results are wrong in certain situations.</p>
+<div class="center figure">
+<a name="figure-12.3"></a><img src="modeller-images/AABBError.png" alt="Figure 12.3 - AABB Error" title="Figure 12.3 - AABB Error" />
+</div>
+<p class="center figcaption">
+<small>Figure 12.3 - AABB Error</small>
+</p>
+<p>For example, in the case of the <code>Sphere</code> primitive, the sphere itself only touches the AABB in the centre of each of the AABB’s faces. However if the user clicks on the corner of the Sphere’s AABB, the collision will be detected with the Sphere, even if the user intended to click past the Sphere onto something behind it (<a href="#figure-12.3">Figure 12.3</a>).</p>
+<p>This trade-off between complexity, performance, and accuracy is common in computer graphics and in many areas of software engineering.</p>
+<h4 id="modifying-scene-objects">Modifying Scene Objects</h4>
+<p>Next, we would like to allow the user to manipulate the selected nodes. They might want to move, resize, or change the color of the selected node. When the user inputs a command to manipulate a node, the <code>Interaction</code> class converts the input into the action that the user intended, and calls the corresponding callback.</p>
+<p>When the <code>Viewer</code> receives a callback for one of these events, it calls the appropriate function on the <code>Scene</code>, which in turn applies the transformation to the currently selected <code>Node</code>.</p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Viewer</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> move(<span class="va">self</span>, x, y):</span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Execute a move command on the scene. &quot;&quot;&quot;</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>        start, direction <span class="op">=</span> <span class="va">self</span>.get_ray(x, y)</span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scene.move_selected(start, direction, <span class="va">self</span>.inverseModelView)</span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> rotate_color(<span class="va">self</span>, forward):</span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; </span></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a><span class="co">        Rotate the color of the selected Node. </span></span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a><span class="co">        Boolean &#39;forward&#39; indicates direction of rotation. </span></span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a><span class="co">        &quot;&quot;&quot;</span></span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scene.rotate_selected_color(forward)</span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> scale(<span class="va">self</span>, up):</span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Scale the selected Node. Boolean up indicates scaling larger.&quot;&quot;&quot;</span></span>
+<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scene.scale_selected(up)</span></code></pre></div>
+<h4 id="changing-color">Changing Color</h4>
+<p>Manipulating color is accomplished with a list of possible colors. The user can cycle through the list with the arrow keys. The scene dispatches the color change command to the currently selected node.</p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Scene</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> rotate_selected_color(<span class="va">self</span>, forwards):</span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Rotate the color of the currently selected node &quot;&quot;&quot;</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="va">self</span>.selected_node <span class="kw">is</span> <span class="va">None</span>: <span class="cf">return</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.selected_node.rotate_color(forwards)</span></code></pre></div>
+<p>Each node stores its current color. The <code>rotate_color</code> function simply modifies the current color of the node. The color is passed to OpenGL with <code>glColor</code> when the node is rendered.</p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Node</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> rotate_color(<span class="va">self</span>, forwards):</span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.color_index <span class="op">+=</span> <span class="dv">1</span> <span class="cf">if</span> forwards <span class="cf">else</span> <span class="op">-</span><span class="dv">1</span></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="va">self</span>.color_index <span class="op">&gt;</span> color.MAX_COLOR:</span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.color_index <span class="op">=</span> color.MIN_COLOR</span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="va">self</span>.color_index <span class="op">&lt;</span> color.MIN_COLOR:</span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.color_index <span class="op">=</span> color.MAX_COLOR</span></code></pre></div>
+<h4 id="scaling-nodes">Scaling Nodes</h4>
+<p>As with color, the scene dispatches any scaling modifications to the selected node, if there is one.</p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Scene</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> scale_selected(<span class="va">self</span>, up):</span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Scale the current selection &quot;&quot;&quot;</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="va">self</span>.selected_node <span class="kw">is</span> <span class="va">None</span>: <span class="cf">return</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.selected_node.scale(up)</span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a>    </span></code></pre></div>
+<p>Each node stores a current matrix that stores its scale. A matrix that scales by parameters <span class="math inline">\(x\)</span>, <span class="math inline">\(y\)</span> and <span class="math inline">\(z\)</span> in those respective directions is:</p>
+<p><span class="math display">\[
+    \begin{bmatrix}
+    x &amp; 0 &amp; 0 &amp; 0 \\
+    0 &amp; y &amp; 0 &amp; 0 \\
+    0 &amp; 0 &amp; z &amp; 0 \\
+    0 &amp; 0 &amp; 0 &amp; 1 \\ 
+    \end{bmatrix}
+\]</span></p>
+<p>When the user modifies the scale of a node, the resulting scaling matrix is multiplied into the current scaling matrix for the node.</p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Node</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> scale(<span class="va">self</span>, up):</span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a>        s <span class="op">=</span>  <span class="fl">1.1</span> <span class="cf">if</span> up <span class="cf">else</span> <span class="fl">0.9</span></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scaling_matrix <span class="op">=</span> numpy.dot(<span class="va">self</span>.scaling_matrix, scaling([s, s, s]))</span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.aabb.scale(s)</span></code></pre></div>
+<p>The function <code>scaling</code> returns such a matrix, given a list of the <span class="math inline">\(x\)</span>, <span class="math inline">\(y\)</span>, and <span class="math inline">\(z\)</span> scaling factors.</p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> scaling(scale):</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>    s <span class="op">=</span> numpy.identity(<span class="dv">4</span>)</span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>    s[<span class="dv">0</span>, <span class="dv">0</span>] <span class="op">=</span> scale[<span class="dv">0</span>]</span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>    s[<span class="dv">1</span>, <span class="dv">1</span>] <span class="op">=</span> scale[<span class="dv">1</span>]</span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>    s[<span class="dv">2</span>, <span class="dv">2</span>] <span class="op">=</span> scale[<span class="dv">2</span>]</span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>    s[<span class="dv">3</span>, <span class="dv">3</span>] <span class="op">=</span> <span class="dv">1</span></span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> s</span></code></pre></div>
+<h4 id="moving-nodes">Moving Nodes</h4>
+<p>In order to translate a node, we use the same ray calculation we used for picking. We pass the ray that represents the current mouse location in to the scene’s <code>move</code> function. The new location of the node should be on the ray. In order to determine where on the ray to place the node, we need to know the node’s distance from the camera. Since we stored the node’s location and distance from the camera when it was selected (in the <code>pick</code> function), we can use that data here. We find the point that is the same distance from the camera along the target ray and we calculate the vector difference between the new and old locations. We then translate the node by the resulting vector.</p>
+<div class="sourceCode" id="cb22"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Scene</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> move_selected(<span class="va">self</span>, start, direction, inv_modelview):</span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; </span></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a><span class="co">        Move the selected node, if there is one.</span></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a><span class="co">            </span></span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a><span class="co">        Consume: </span></span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a><span class="co">        start, direction describes the Ray to move to</span></span>
+<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a><span class="co">        mat is the modelview matrix for the scene </span></span>
+<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a><span class="co">        &quot;&quot;&quot;</span></span>
+<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="va">self</span>.selected_node <span class="kw">is</span> <span class="va">None</span>: <span class="cf">return</span></span>
+<span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb22-12"><a href="#cb22-12" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Find the current depth and location of the selected node</span></span>
+<span id="cb22-13"><a href="#cb22-13" aria-hidden="true" tabindex="-1"></a>        node <span class="op">=</span> <span class="va">self</span>.selected_node</span>
+<span id="cb22-14"><a href="#cb22-14" aria-hidden="true" tabindex="-1"></a>        depth <span class="op">=</span> node.depth</span>
+<span id="cb22-15"><a href="#cb22-15" aria-hidden="true" tabindex="-1"></a>        oldloc <span class="op">=</span> node.selected_loc</span>
+<span id="cb22-16"><a href="#cb22-16" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb22-17"><a href="#cb22-17" aria-hidden="true" tabindex="-1"></a>        <span class="co"># The new location of the node is the same depth along the new ray</span></span>
+<span id="cb22-18"><a href="#cb22-18" aria-hidden="true" tabindex="-1"></a>        newloc <span class="op">=</span> (start <span class="op">+</span> direction <span class="op">*</span> depth)</span>
+<span id="cb22-19"><a href="#cb22-19" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb22-20"><a href="#cb22-20" aria-hidden="true" tabindex="-1"></a>        <span class="co"># transform the translation with the modelview matrix</span></span>
+<span id="cb22-21"><a href="#cb22-21" aria-hidden="true" tabindex="-1"></a>        translation <span class="op">=</span> newloc <span class="op">-</span> oldloc</span>
+<span id="cb22-22"><a href="#cb22-22" aria-hidden="true" tabindex="-1"></a>        pre_tran <span class="op">=</span> numpy.array([translation[<span class="dv">0</span>], translation[<span class="dv">1</span>], translation[<span class="dv">2</span>], <span class="dv">0</span>])</span>
+<span id="cb22-23"><a href="#cb22-23" aria-hidden="true" tabindex="-1"></a>        translation <span class="op">=</span> inv_modelview.dot(pre_tran)</span>
+<span id="cb22-24"><a href="#cb22-24" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb22-25"><a href="#cb22-25" aria-hidden="true" tabindex="-1"></a>        <span class="co"># translate the node and track its location</span></span>
+<span id="cb22-26"><a href="#cb22-26" aria-hidden="true" tabindex="-1"></a>        node.translate(translation[<span class="dv">0</span>], translation[<span class="dv">1</span>], translation[<span class="dv">2</span>])</span>
+<span id="cb22-27"><a href="#cb22-27" aria-hidden="true" tabindex="-1"></a>        node.selected_loc <span class="op">=</span> newloc</span></code></pre></div>
+<p>Notice that the new and old locations are defined in the camera coordinate space. We need our translation to be defined in the world coordinate space. Thus, we convert the camera space translation into a world space translation by multiplying by the inverse of the modelview matrix.</p>
+<p>As with scale, each node stores a matrix which represents its translation. A translation matrix looks like:</p>
+<p><span class="math display">\[
+   \begin{bmatrix}
+   1 &amp; 0 &amp; 0 &amp; x \\
+   0 &amp; 1 &amp; 0 &amp; y \\
+   0 &amp; 0 &amp; 1 &amp; z \\
+   0 &amp; 0 &amp; 0 &amp; 1 \\
+   \end{bmatrix}
+\]</span></p>
+<p>When the node is translated, we construct a new translation matrix for the current translation, and multiply it into the node’s translation matrix for use during rendering.</p>
+<div class="sourceCode" id="cb23"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Node</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> translate(<span class="va">self</span>, x, y, z):</span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.translation_matrix <span class="op">=</span> numpy.dot(</span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.translation_matrix, </span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a>            translation([x, y, z]))</span></code></pre></div>
+<p>The <code>translation</code> function returns a translation matrix given a list representing the <span class="math inline">\(x\)</span>, <span class="math inline">\(y\)</span>, and <span class="math inline">\(z\)</span> translation distances.</p>
+<div class="sourceCode" id="cb24"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> translation(displacement):</span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a>    t <span class="op">=</span> numpy.identity(<span class="dv">4</span>)</span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a>    t[<span class="dv">0</span>, <span class="dv">3</span>] <span class="op">=</span> displacement[<span class="dv">0</span>]</span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a>    t[<span class="dv">1</span>, <span class="dv">3</span>] <span class="op">=</span> displacement[<span class="dv">1</span>]</span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a>    t[<span class="dv">2</span>, <span class="dv">3</span>] <span class="op">=</span> displacement[<span class="dv">2</span>]</span>
+<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> t</span></code></pre></div>
+<h4 id="placing-nodes">Placing Nodes</h4>
+<p>Node placement uses techniques from both picking and translation. We use the same ray calculation for the current mouse location to determine where to place the node.</p>
+<div class="sourceCode" id="cb25"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Viewer</span></span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> place(<span class="va">self</span>, shape, x, y):</span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Execute a placement of a new primitive into the scene. &quot;&quot;&quot;</span></span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a>        start, direction <span class="op">=</span> <span class="va">self</span>.get_ray(x, y)</span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scene.place(shape, start, direction, <span class="va">self</span>.inverseModelView)</span></code></pre></div>
+<p>To place a new node, we first create the new instance of the corresponding type of node and add it to the scene. We want to place the node underneath the user’s cursor, so we find a point on the ray, at a fixed distance from the camera. Again, the ray is represented in camera space, so we convert the resulting translation vector into the world coordinate space by multiplying it by the inverse modelview matrix. Finally, we translate the new node by the calculated vector. </p>
+<div class="sourceCode" id="cb26"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># class Scene</span></span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> place(<span class="va">self</span>, shape, start, direction, inv_modelview):</span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; </span></span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a><span class="co">        Place a new node.</span></span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a><span class="co">            </span></span>
+<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a><span class="co">        Consume:  </span></span>
+<span id="cb26-7"><a href="#cb26-7" aria-hidden="true" tabindex="-1"></a><span class="co">        shape the shape to add</span></span>
+<span id="cb26-8"><a href="#cb26-8" aria-hidden="true" tabindex="-1"></a><span class="co">        start, direction describes the Ray to move to</span></span>
+<span id="cb26-9"><a href="#cb26-9" aria-hidden="true" tabindex="-1"></a><span class="co">        inv_modelview is the inverse modelview matrix for the scene </span></span>
+<span id="cb26-10"><a href="#cb26-10" aria-hidden="true" tabindex="-1"></a><span class="co">        &quot;&quot;&quot;</span></span>
+<span id="cb26-11"><a href="#cb26-11" aria-hidden="true" tabindex="-1"></a>        new_node <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb26-12"><a href="#cb26-12" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> shape <span class="op">==</span> <span class="st">&#39;sphere&#39;</span>: new_node <span class="op">=</span> Sphere()</span>
+<span id="cb26-13"><a href="#cb26-13" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> shape <span class="op">==</span> <span class="st">&#39;cube&#39;</span>: new_node <span class="op">=</span> Cube()</span>
+<span id="cb26-14"><a href="#cb26-14" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> shape <span class="op">==</span> <span class="st">&#39;figure&#39;</span>: new_node <span class="op">=</span> SnowFigure()</span>
+<span id="cb26-15"><a href="#cb26-15" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb26-16"><a href="#cb26-16" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.add_node(new_node)</span>
+<span id="cb26-17"><a href="#cb26-17" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb26-18"><a href="#cb26-18" aria-hidden="true" tabindex="-1"></a>        <span class="co"># place the node at the cursor in camera-space</span></span>
+<span id="cb26-19"><a href="#cb26-19" aria-hidden="true" tabindex="-1"></a>        translation <span class="op">=</span> (start <span class="op">+</span> direction <span class="op">*</span> <span class="va">self</span>.PLACE_DEPTH)</span>
+<span id="cb26-20"><a href="#cb26-20" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb26-21"><a href="#cb26-21" aria-hidden="true" tabindex="-1"></a>        <span class="co"># convert the translation to world-space</span></span>
+<span id="cb26-22"><a href="#cb26-22" aria-hidden="true" tabindex="-1"></a>        pre_tran <span class="op">=</span> numpy.array([translation[<span class="dv">0</span>], translation[<span class="dv">1</span>], translation[<span class="dv">2</span>], <span class="dv">1</span>])</span>
+<span id="cb26-23"><a href="#cb26-23" aria-hidden="true" tabindex="-1"></a>        translation <span class="op">=</span> inv_modelview.dot(pre_tran)</span>
+<span id="cb26-24"><a href="#cb26-24" aria-hidden="true" tabindex="-1"></a>    </span>
+<span id="cb26-25"><a href="#cb26-25" aria-hidden="true" tabindex="-1"></a>        new_node.translate(translation[<span class="dv">0</span>], translation[<span class="dv">1</span>], translation[<span class="dv">2</span>])</span></code></pre></div>
+<h2 id="summary">Summary</h2>
+<p>Congratulations! We’ve successfully implemented a tiny 3D modeller!</p>
+<div class="center figure">
+<a name="figure-12.4"></a><img src="modeller-images/StartScene.png" alt="Figure 12.4 - Sample Scene" title="Figure 12.4 - Sample Scene" />
+</div>
+<p class="center figcaption">
+<small>Figure 12.4 - Sample Scene</small>
+</p>
+<p>We saw how to develop an extensible data structure to represent the objects in the scene. We noticed that using the Composite design pattern and a tree-based data structure makes it easy to traverse the scene for rendering and allows us to add new types of nodes with no added complexity. We leveraged this data structure to render the design to the screen, and manipulated OpenGL matrices in the traversal of the scene graph. We built a very simple callback system for application-level events, and used it to encapsulate handling of operating system events. We discussed possible implementations for ray-object collision detection, and the trade-offs between correctness, complexity, and performance. Finally, we implemented methods for manipulating the contents of the scene.</p>
+<p>You can expect to find these same basic building blocks in production 3D software. The scene graph structure and relative coordinate spaces are found in many types of 3D graphics applications, from CAD tools to game engines. One major simplification in this project is in the user interface. A production 3D modeller would be expected to have a complete user interface, which would necessitate a much more sophisticated events system instead of our simple callback system.</p>
+<p>We could do further experimentation to add new features to this project. Try one of these:</p>
+<ul>
+<li>Add a <code>Node</code> type to support triangle meshes for arbitrary shapes.</li>
+<li>Add an undo stack, to allow undo/redo of modeller actions.</li>
+<li>Save/load the design using a 3D file format like DXF.</li>
+<li>Integrate a rendering engine: export the design for use in a photorealistic renderer.</li>
+<li>Improve collision detection with accurate ray-object intersection.</li>
+</ul>
+<h2 id="further-exploration">Further Exploration</h2>
+<p>For further insight into real-world 3D modelling software, a few open source projects are interesting.</p>
+<p><a href="http://www.blender.org/">Blender</a> is an open source full-featured 3D animation suite. It provides a full 3D pipeline for building special effects in video, or for game creation. The modeller is a small part of this project, and it is a good example of integrating a modeller into a large software suite.</p>
+<p><a href="http://www.openscad.org/">OpenSCAD</a> is an open source 3D modelling tool. It is not interactive; rather, it reads a script file that specifies how to generate the scene. This gives the designer “full control over the modelling process”.</p>
+<p>For more information about algorithms and techniques in computer graphics, <a href="http://tog.acm.org/resources/GraphicsGems/">Graphics Gems</a> is a great resource.</p>
+<section class="footnotes" role="doc-endnotes">
+<hr />
+<ol>
+<li id="fn1" role="doc-endnote"><p>Thanks to Dr. Anton Gerdelan for the image. His OpenGL tutorial book is available at <a href="http://antongerdelan.net/opengl/">http://antongerdelan.net/opengl/</a>.<a href="#fnref1" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+</ol>
+</section>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="provenance" content="$Id: index.html 1472 2012-09-21 22:17:41Z audrey $" />
+    <link rel="stylesheet" href="/theme/css/bootstrap.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/bootstrap-responsive.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/code.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/500L.css" type="text/css" />
+    <title>500 Lines or Less | An Event-Driven Web Framework</title>
+    <script type="text/x-mathjax-config">
+        MathJax.Hub.Config({
+          tex2jax: {
+            inlineMath: [['$','$'], ['\\(','\\)']],
+            displayMath: [ ['$$','$$'], ["\\[","\\]"] ],
+          },
+        });
+    </script>
+    <script type="text/javascript" src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+    </script>
+</head>
+  <body>
+    <div class="container">
+      <div class="row">
+        <div class="hero-unit">
+	  <a class='pull-right' href='/en/index.html'></a>
+          <h1>An Event-Driven Web Framework</h1>
+          <h2 class="author">Leo Zovic</h2>
+          <blockquote class="pull-right">
+            </blockquote>
+
+        </div>
+      </div>
+      <div class="row">
+        <div class='span10 offset1' id='content'>
+          <p><em>Leo (better known online as inaimathi) is a recovering Graphic Designer who has professionally written Scheme, Common Lisp, Erlang, Javascript, Haskell, Clojure, Go, Python, PHP and C. He currently blogs about programming, plays board games and works at a Ruby-based startup in Toronto, Ontario.</em></p>
+<p>In 2013, I decided to write a <a href="https://github.com/Inaimathi/deal">web-based game prototyping tool</a> for card and board games called <em>House</em>. In these types of games, it is common for one player to wait for another player to make a move; however, when the other player finally does take action, we would like for the waiting player to be notified of the move quickly thereafter.</p>
+<p>This is a problem that turns out to be more complicated than it first seems. In this chapter, we’ll explore the issues with using HTTP to build this sort of interaction, and then we’ll build a <em>web framework</em> in Common Lisp that allows us to solve similar problems in the future.</p>
+<h2 id="the-basics-of-http-servers">The Basics of HTTP Servers</h2>
+<p>At the simplest level, an HTTP exchange is a single request followed by a single response. A <em>client</em> sends a request, which includes a resource identifier, an HTTP version tag, some headers and some parameters. The <em>server</em> parses that request, figures out what to do about it, and sends a response which includes the same HTTP version tag, a response code, some headers and a response body.</p>
+<p>Notice that, in this description, the server responds to a request from a specific client. In our case, we want each player to be updated about <em>any</em> moves as soon as they happen, rather than only getting notifications when their own move is made. This means we need the server to <em>push</em> messages to clients without first receiving a request for the information.<a href="#fn1" class="footnote-ref" id="fnref1" role="doc-noteref"><sup>1</sup></a></p>
+<p>There are several standard approaches to enabling server push over HTTP.</p>
+<h3 id="cometlong-poll">Comet/Long Poll</h3>
+<p>The “long poll” technique has the client send the server a new request as soon as it receives a response. Instead of fulfilling that request right away, the server waits on a subsequent event to respond. This is a bit of a semantic distinction, since the client is still taking action on every update.</p>
+<h3 id="server-sent-events-sse">Server-Sent Events (SSE)</h3>
+<p>Server-sent events require that the client initiates a connection and then keeps it open. The server periodically writes new data to the connection without closing it, and the client interprets incoming new messages as they arrive rather than waiting for the response connection to terminate. This is a bit more efficient than the Comet/long poll approach because each message doesn’t have to incur the overhead of new HTTP headers.</p>
+<h3 id="websockets">WebSockets</h3>
+<p>WebSockets are a communication protocol built on top of HTTP. The server and client open up an HTTP conversation, then perform a handshake and protocol escalation. The end result is that they’re still communicating over TCP/IP, but they’re not using HTTP to do it at all. The advantage this has over SSEs is that you can customize the protocol for efficiency.</p>
+<h3 id="long-lived-connections">Long-Lived Connections</h3>
+<p>These three approaches are quite different from one another, but they all share an important characteristic: they all depend on long-lived connections. Long polling depends on the server keeping requests around until new data is available, SSEs keep an open stream between client and server to which data is periodically written, and WebSockets change the protocol a particular connection is using, but leave it open.</p>
+<p>To see why this might cause problems for your average HTTP server, let’s consider how the underlying implementation might work.</p>
+<h3 id="traditional-http-server-architecture">Traditional HTTP Server Architecture</h3>
+<p><a name="sec.eventsweb.serverarch"> </a></p>
+<p>A single HTTP server processes many requests concurrently. Historically, many HTTP servers have used a <em>thread-per-request</em> architecture. That is, for each incoming request, the server creates a thread to do the work necessary to respond.</p>
+<p>Since each of these connections is intended to be short-lived, we don’t need many threads executing in parallel to handle them all. This model also simplifies the <em>implementation</em> of the server by enabling the server programmer to write code as if there were only one connection being handled at any given time. It also gives us the freedom to clean up failed or “zombie” connections and their associated resources by killing the corresponding thread and letting the garbage collector do its job.</p>
+<p>The key observation is that an HTTP server hosting a “traditional” web application that has <span class="math inline">\(N\)</span> concurrent users might only need to handle a very small fraction of <span class="math inline">\(N\)</span> requests <em>in parallel</em> to succeed. For the type of interactive application that we are trying to build, <span class="math inline">\(N\)</span> users will almost certainly require the application to maintain at least <span class="math inline">\(N\)</span> connections in parallel, at once.</p>
+<p>The consequence of keeping long-lived connections around is that we’ll need either:</p>
+<ul>
+<li>A platform where threads are “cheap” enough that we can use large numbers of them at once.</li>
+<li>A server architecture that can handle many connections with a single thread.</li>
+</ul>
+<p>There are programming environments such as <a href="http://racket-lang.org/">Racket</a>, <a href="http://www.erlang.org/">Erlang</a>, and <a href="http://hackage.haskell.org/package/base-4.7.0.1/docs/Control-Concurrent.html">Haskell</a> that provide thread-like constructs that are “lightweight” enough to consider the first option. This approach requires the programmer to explicitly deal with synchronization issues, which are going to be much more prevalent in a system where connections are open for a long time and likely all competing for similar resources. Specifically, if we have some sort of central data shared by several users simultaneously, we will need to coordinate reads and writes of that data in some way.</p>
+<p>If we don’t have cheap threads at our disposal or we are unwilling to work with explicit synchronization, we must consider having a single thread handle many connections.<a href="#fn2" class="footnote-ref" id="fnref2" role="doc-noteref"><sup>2</sup></a> In this model, our single thread is going to be handling tiny “slices” of many requests all at once, switching between them as efficiently as it possibly can. This system architecture pattern is most commonly referred to as <em>event-driven</em> or <em>event-based</em>.<a href="#fn3" class="footnote-ref" id="fnref3" role="doc-noteref"><sup>3</sup></a></p>
+<p>Since we are only managing a single thread, we don’t have to worry as much about protecting shared resources from simultaneous access. However, we do have a unique problem of our own in this model. Since our single thread is working on all in-flight requests at once, we must make sure that it <strong>never blocks</strong>. Blocking on any connection blocks the entire server from making progress on any other request. We have to be able to move on to another client if the current one can’t be serviced further, and we need to be able to do so in a manner that doesn’t throw out the work done so far.<a href="#fn4" class="footnote-ref" id="fnref4" role="doc-noteref"><sup>4</sup></a></p>
+<p>While it is uncommon for a programmer to explicitly tell a thread to stop working, many common operations carry a risk of blocking. Because threads are so prevalent, and reasoning about asynchronicity is a heavy burden on the programmer, many languages and their frameworks assume that blocking on I/O is a desirable property. This makes it very easy to block somewhere <em>by accident</em>. Luckily, Common Lisp does provide us with a minimal set of asynchronous I/O primitives which we can build on top of.</p>
+<h3 id="architectural-decisions">Architectural Decisions</h3>
+<p>Now that we’ve studied the background of this problem, we’ve arrived at the point where we need to make informed decisions about <em>what</em> we are building.</p>
+<p>At the time I started thinking about this project, Common Lisp didn’t have a complete green-thread implementation, and the <a href="http://common-lisp.net/project/bordeaux-threads/">standard portable threading library</a> doesn’t qualify as “really REALLY cheap”. The options amounted to either picking a different language, or building an event-driven web server for my purpose. I chose the latter.</p>
+<p>In addition to the server architecture, we also need to choose which of the three server-push approaches to use. The use-case we are considering (an interactive multiplayer board game) requires frequent updates to each client, but relatively sparse requests <em>from</em> each client, which fits the SSE approach to pushing updates, so we’ll go with this.</p>
+<p>Now that we’ve motivated our architectural decision and decided on a mechanism for simulating bidirectional communication between clients and server, let’s get started on building our web framework. We’ll start by building a relatively “dumb” server first, and then we’ll extend it into a web-application framework that lets us focus on <em>what</em> our heavily-interactive program needs to do, and not <em>how</em> it is doing it.</p>
+<h2 id="building-an-event-driven-web-server">Building an Event-Driven Web Server</h2>
+<p>Most programs that use a single process to manage concurrent streams of work use a pattern called an <em>event loop</em>. Let’s look at what an event loop for our web server might look like.</p>
+<h3 id="the-event-loop">The Event Loop</h3>
+<p>Our event loop needs to:</p>
+<ul>
+<li>listen for incoming connections;</li>
+<li>handle all new handshakes or incoming data on existing connections;</li>
+<li>clean up dangling sockets that are unexpectedly killed (e.g. by an interrupt)</li>
+</ul>
+<div class="sourceCode" id="cb1"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> start </span>((port <span class="kw">integer</span>))</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">let</span> ((server (socket-listen</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>         usocket:*wildcard-host* port</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>         :reuse-address <span class="kw">t</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>         <span class="bu">:element-type</span> &#39;octet))</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    (conns (<span class="kw">make-hash-table</span>)))</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    (<span class="kw">unwind-protect</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>     (<span class="kw">loop</span> (<span class="kw">loop</span> for ready</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>          in (wait-for-input</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>              (<span class="kw">cons</span> server (alexandria:hash-table-keys conns))</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>              :ready-only <span class="kw">t</span>)</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>          <span class="kw">do</span> (process-ready ready conns)))</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">loop</span> for c being <span class="kw">the</span> hash-keys of conns</span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a>     <span class="kw">do</span> (<span class="kw">loop</span> while (socket-close c)))</span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">loop</span> while (socket-close server)))))</span></code></pre></div>
+<p>If you haven’t written a Common Lisp program before, this code block requires some explanation. What we have written here is a <em>method definition</em>. While Lisp is popularly known as a functional language, it also has its own system for object-oriented programming called “The Common Lisp Object System”, which is usually abbreviated as “CLOS”.<a href="#fn5" class="footnote-ref" id="fnref5" role="doc-noteref"><sup>5</sup></a></p>
+<h3 id="clos-and-generic-functions">CLOS and Generic Functions</h3>
+<p>In CLOS, instead of focusing on classes and methods, we write <a href="http://www.gigamonkeys.com/book/object-reorientation-generic-functions.html"><em>generic functions</em></a> that are implemented as collections of <em>methods</em>. In this model, methods don’t <em>belong to</em> classes, they <em>specialize on</em> types.<a href="#fn6" class="footnote-ref" id="fnref6" role="doc-noteref"><sup>6</sup></a> The <code>start</code> method we just wrote is a unary method where the argument <code>port</code> is <em>specialized on</em> the type <code>integer</code>. This means that we could have several implementations of <code>start</code> where <code>port</code> varies in type, and the runtime will select which implementation to use depending on the type of <code>port</code> when <code>start</code> is called.</p>
+<p>More generally, methods can specialize on more than one argument. When a <code>method</code> is called, the runtime:</p>
+<ul>
+<li>dispatches on the type of its arguments to figure out which method body should be run, and</li>
+<li>runs the appropriate function.</li>
+</ul>
+<h3 id="processing-sockets">Processing Sockets</h3>
+<p>We’ll see another generic function at work in <code>process-ready</code>, which was called earlier from our event loop. It processes a ready socket with one of two methods, depending on the type of socket we are handling.</p>
+<p>The two types we’re concerned with are the <code>stream-usocket</code>, which represents a client socket that will make a request and expect to be sent some data back, and the <code>stream-server-usocket</code>, which represents our local TCP listener that will have new client connections for us to deal with.</p>
+<p>If a <code>stream-server-socket</code> is <code>ready</code>, that means there’s a new client socket waiting to start a conversation. We call <code>socket-accept</code> to accept the connection, and then put the result in our connection table so that our event loop can begin processing it with the others.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> process-ready </span>((ready stream-server-usocket) (conns <span class="kw">hash-table</span>))</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">setf</span> (<span class="kw">gethash</span> (socket-accept ready <span class="bu">:element-type</span> &#39;octet) conns) <span class="kw">nil</span>))</span></code></pre></div>
+<p>When a <code>stream-usocket</code> is <code>ready</code>, that means that it has some bytes ready for us to read. (It’s also possible that the other party has terminated the connection.)</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> process-ready </span>((ready stream-usocket) (conns <span class="kw">hash-table</span>))</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">let</span> ((buf (<span class="kw">or</span> (<span class="kw">gethash</span> ready conns)</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>         (<span class="kw">setf</span> (<span class="kw">gethash</span> ready conns)</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>               (<span class="kw">make-instance</span> &#39;buffer :bi-stream (flex-stream ready))))))</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    (<span class="kw">if</span> (<span class="kw">eq</span> :eof (buffer! buf))</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    (<span class="kw">ignore-errors</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">remhash</span> ready conns)</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>      (socket-close ready))</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    (<span class="kw">let</span> ((too-big?</span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>           (<span class="op">&gt;</span> (total-buffered buf)</span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>          +max-request-size+))</span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>          (too-old?</span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>           (<span class="op">&gt;</span> (<span class="op">-</span> (<span class="kw">get-universal-time</span>) (started buf))</span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>          +max-request-age+))</span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>          (too-needy?</span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>           (<span class="op">&gt;</span> (tries buf)</span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>          +max-buffer-tries+)))</span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">cond</span> (too-big?</span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a>         (error! +<span class="dv">413</span>+ ready)</span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a>         (<span class="kw">remhash</span> ready conns))</span>
+<span id="cb3-21"><a href="#cb3-21" aria-hidden="true" tabindex="-1"></a>        ((<span class="kw">or</span> too-old? too-needy?)</span>
+<span id="cb3-22"><a href="#cb3-22" aria-hidden="true" tabindex="-1"></a>         (error! +<span class="dv">400</span>+ ready)</span>
+<span id="cb3-23"><a href="#cb3-23" aria-hidden="true" tabindex="-1"></a>         (<span class="kw">remhash</span> ready conns))</span>
+<span id="cb3-24"><a href="#cb3-24" aria-hidden="true" tabindex="-1"></a>        ((<span class="kw">and</span> (request buf) (<span class="kw">zerop</span> (expecting buf)))</span>
+<span id="cb3-25"><a href="#cb3-25" aria-hidden="true" tabindex="-1"></a>         (<span class="kw">remhash</span> ready conns)</span>
+<span id="cb3-26"><a href="#cb3-26" aria-hidden="true" tabindex="-1"></a>         (<span class="kw">when</span> (contents buf)</span>
+<span id="cb3-27"><a href="#cb3-27" aria-hidden="true" tabindex="-1"></a>           (<span class="kw">setf</span> (parameters (request buf))</span>
+<span id="cb3-28"><a href="#cb3-28" aria-hidden="true" tabindex="-1"></a>             (<span class="kw">nconc</span> (parse buf) (parameters (request buf)))))</span>
+<span id="cb3-29"><a href="#cb3-29" aria-hidden="true" tabindex="-1"></a>         (<span class="kw">handler-case</span></span>
+<span id="cb3-30"><a href="#cb3-30" aria-hidden="true" tabindex="-1"></a>             (handle-request ready (request buf))</span>
+<span id="cb3-31"><a href="#cb3-31" aria-hidden="true" tabindex="-1"></a>           (http-assertion-error () (error! +<span class="dv">400</span>+ ready))</span>
+<span id="cb3-32"><a href="#cb3-32" aria-hidden="true" tabindex="-1"></a>           ((<span class="kw">and</span> (<span class="kw">not</span> <span class="kw">warning</span>)</span>
+<span id="cb3-33"><a href="#cb3-33" aria-hidden="true" tabindex="-1"></a>             (<span class="kw">not</span> <span class="kw">simple-error</span>)) (e)</span>
+<span id="cb3-34"><a href="#cb3-34" aria-hidden="true" tabindex="-1"></a>             (error! +<span class="dv">500</span>+ ready e))))</span>
+<span id="cb3-35"><a href="#cb3-35" aria-hidden="true" tabindex="-1"></a>        (<span class="kw">t</span></span>
+<span id="cb3-36"><a href="#cb3-36" aria-hidden="true" tabindex="-1"></a>         (<span class="kw">setf</span> (contents buf) <span class="kw">nil</span>)))))))</span></code></pre></div>
+<p>This is more involved than the first case. We:</p>
+<ol type="1">
+<li>Get the buffer associated with this socket, or create it if it doesn’t exist yet;</li>
+<li>Read output into that buffer, which happens in the call to <code>buffer!</code>;</li>
+<li>If that read got us an <code>:eof</code>, the other side hung up, so we discard the socket <em>and</em> its buffer;</li>
+<li>Otherwise, we check if the buffer is one of <code>complete?</code>, <code>too-big?</code>, <code>too-old?</code> or <code>too-needy?</code>. If so, we remove it from the connections table and return the appropriate HTTP response.</li>
+</ol>
+<p>This is the first time we’re seeing I/O in our event loop. In our discussion in <a href="#sec.eventsweb.serverarch">Traditional HTTP Server Architecture</a>, we mentioned that we have to be very careful about I/O in an event-driven system, because we could accidentally block our single thread. So, what do we do here to ensure that this doesn’t happen? We have to explore our implementation of <code>buffer!</code> to find out exactly how this works.</p>
+<h3 id="processing-connections-without-blocking">Processing Connections Without Blocking</h3>
+<p>The basis of our approach to processing connections without blocking is the library function <a href="http://clhs.lisp.se/Body/f_rd_c_1.htm"><code>read-char-no-hang</code></a>, which immediately returns <code>nil</code> when called on a stream that has no available data. Where there is data to be read, we use a buffer to store intermediate input for this connection.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> buffer</span>! ((buffer buffer))</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">handler-case</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">let</span> ((<span class="kw">stream</span> (bi-stream buffer)))</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>        (<span class="kw">incf</span> (tries buffer))</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>        (<span class="kw">loop</span> for <span class="kw">char</span> <span class="op">=</span> (<span class="kw">read-char-no-hang</span> <span class="kw">stream</span>) until (<span class="kw">null</span> <span class="kw">char</span>)</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>           <span class="kw">do</span> (<span class="kw">push</span> <span class="kw">char</span> (contents buffer))</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>           <span class="kw">do</span> (<span class="kw">incf</span> (total-buffered buffer))</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>           <span class="kw">when</span> (request buffer) <span class="kw">do</span> (<span class="kw">decf</span> (expecting buffer))</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>           <span class="kw">when</span> (line-terminated? (contents buffer))</span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>           <span class="kw">do</span> (<span class="kw">multiple-value-bind</span> (parsed expecting) (parse buffer)</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>            (<span class="kw">setf</span> (request buffer) parsed</span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>                  (expecting buffer) expecting)</span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>            (<span class="kw">return</span> <span class="kw">char</span>))</span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>           <span class="kw">when</span> (<span class="op">&gt;</span> (total-buffered buffer) +max-request-size+) <span class="kw">return</span> <span class="kw">char</span></span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>           finally (<span class="kw">return</span> <span class="kw">char</span>)))</span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a>    (<span class="kw">error</span> () :eof)))</span></code></pre></div>
+<p>When <code>buffer!</code> is called on a <code>buffer</code>, it:</p>
+<ul>
+<li>increments the <code>tries</code> count, so that we can evict “needy” buffers in <code>process-ready</code>;</li>
+<li>loops to read characters from the input stream, and</li>
+<li>returns the last character it read if it has read all of the available input.</li>
+</ul>
+<p>It also tracks any <code>\r\n\r\n</code> sequences so that we can later detect complete requests. Finally, if any error results, it returns an <code>:eof</code> to signal that <code>process-ready</code> should discard this connection.</p>
+<p>The <code>buffer</code> type is a CLOS <a href="http://www.gigamonkeys.com/book/object-reorientation-classes.html"><em>class</em></a>. Classes in CLOS let us define a type with fields called <code>slots</code>. We don’t see the behaviours associated with <code>buffer</code> on the class definition, because (as we’ve already learned), we do that using generic functions like <code>buffer!</code>.</p>
+<p><code>defclass</code> does allow us to specify getters/setters (<code>reader</code>s/<code>accessor</code>s), and slot initializers; <code>:initform</code> specifies a default value, while <code>:initarg</code> identifies a hook that the caller of <code>make-instance</code> can use to provide a default value.</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defclass</span><span class="fu"> buffer </span>()</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>  ((tries :accessor tries :initform <span class="dv">0</span>)</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>   (contents :accessor contents :initform <span class="kw">nil</span>)</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>   (bi-stream :reader bi-stream :initarg :bi-stream)</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>   (total-buffered :accessor total-buffered :initform <span class="dv">0</span>)</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>   (started :reader started :initform (<span class="kw">get-universal-time</span>))</span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>   (request :accessor request :initform <span class="kw">nil</span>)</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>   (expecting :accessor expecting :initform <span class="dv">0</span>)))</span></code></pre></div>
+<p>Our <code>buffer</code> class has seven slots:</p>
+<ul>
+<li><code>tries</code>, which keeps count of how many times we’ve tried reading into this buffer</li>
+<li><code>contents</code>, which contains what we’ve read so far</li>
+<li><code>bi-stream</code>, which a hack around some of those Common Lisp-specific, non-blocking-I/O annoyances I mentioned earlier</li>
+<li><code>total-buffered</code>, which is a count of chars we’ve read so far</li>
+<li><code>started</code>, which is a timestamp that tells us when we created this buffer</li>
+<li><code>request</code>, which will eventually contain the request we construct from buffered data</li>
+<li><code>expecting</code>, which will signal how many more chars we’re expecting (if any) after we buffer the request headers</li>
+</ul>
+<h3 id="interpreting-requests">Interpreting Requests</h3>
+<p><a name="sec.eventsweb.handlerfunc"> </a> Now that we’ve seen how we incrementally assemble full requests from bits of data that are pooled into our buffers, what happens when we have a full request ready for handling? This happens in the method <code>handle-request</code>.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> handle-request </span>((socket usocket) (req request))</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>  (aif (lookup (resource req) *handlers*)</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>       (<span class="kw">funcall</span> it socket (parameters req))</span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>       (error! +<span class="dv">404</span>+ socket)))</span></code></pre></div>
+<p>This method adds another layer of error handling so that if the request is old, big, or needy, we can send a <code>400</code> response to indicate that the client provided us with some bad or slow data. However, if any <em>other</em> error happens here, it’s because the programer made a mistake defining a <em>handler</em>, which should be treated as a <code>500</code> error. This will inform the client that something went wrong on the server as a result of their legitimate request.</p>
+<p>If the request is well-formed, we do the tiny and obvious job of looking up the requested resource in the <code>*handlers*</code> table. If we find one, we <code>funcall</code> <code>it</code>, passing along the client <code>socket</code> as well as the parsed request parameters. If there’s no matching handler in the <code>*handlers*</code> table, we instead send along a <code>404</code> error. The handler system will be part of our full-fledged <em>web framework</em>, which we’ll discuss in a later section.</p>
+<p>We still haven’t seen how requests are parsed and interpreted from one of our buffers, though. Let’s look at that next:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> parse </span>((buf buffer))</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">let</span> ((str (<span class="kw">coerce</span> (<span class="kw">reverse</span> (contents buf)) &#39;string)))</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    (<span class="kw">if</span> (request buf)</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>        (parse-params str)</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>        (parse str))))</span></code></pre></div>
+<p>This high-level method delegates to a specialization of <code>parse</code> that works with plain strings, or to <code>parse-params</code> that interprets the buffer contents as HTTP parameters. These are called depending on how much of the request we’ve already processed; the final <code>parse</code> happens when we already have a partial <code>request</code> saved in the <code>buffer</code>, at which point we’re only looking to parse the request body.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> parse </span>((str <span class="kw">string</span>))</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">let</span> ((lines (split <span class="st">&quot;</span><span class="sc">\\</span><span class="st">r?</span><span class="sc">\\</span><span class="st">n&quot;</span> str)))</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    (<span class="kw">destructuring-bind</span> (req-type path http-version) (split <span class="st">&quot; &quot;</span> (<span class="kw">pop</span> lines))</span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">declare</span> (<span class="kw">ignore</span> req-type))</span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>      (assert-http (<span class="kw">string=</span> http-version <span class="st">&quot;HTTP/1.1&quot;</span>))</span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">let*</span> ((path-pieces (split <span class="st">&quot;</span><span class="sc">\\</span><span class="st">?&quot;</span> path))</span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>         (resource (<span class="kw">first</span> path-pieces))</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>         (parameters (<span class="kw">second</span> path-pieces))</span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>         (req (<span class="kw">make-instance</span> &#39;request :resource resource)))</span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>    (<span class="kw">loop</span></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>       for header <span class="op">=</span> (<span class="kw">pop</span> lines)</span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>       for (name value) <span class="op">=</span> (split <span class="st">&quot;: &quot;</span> header)</span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>       until (<span class="kw">null</span> name)</span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>       <span class="kw">do</span> (<span class="kw">push</span> (<span class="kw">cons</span> (-&gt;keyword name) value) (headers req)))</span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>    (<span class="kw">setf</span> (parameters req) (parse-params parameters))</span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a>    req))))</span>
+<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-18"><a href="#cb8-18" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> parse-params </span>((params <span class="kw">null</span>)) <span class="kw">nil</span>)</span>
+<span id="cb8-19"><a href="#cb8-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-20"><a href="#cb8-20" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> parse-params </span>((params <span class="kw">string</span>))</span>
+<span id="cb8-21"><a href="#cb8-21" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">loop</span> for pair in (split <span class="st">&quot;&amp;&quot;</span> params)</span>
+<span id="cb8-22"><a href="#cb8-22" aria-hidden="true" tabindex="-1"></a>     for (name val) <span class="op">=</span> (split <span class="st">&quot;=&quot;</span> pair)</span>
+<span id="cb8-23"><a href="#cb8-23" aria-hidden="true" tabindex="-1"></a>     collect (<span class="kw">cons</span> (-&gt;keyword name) (<span class="kw">or</span> val <span class="st">&quot;&quot;</span>))))</span></code></pre></div>
+<p>In the <code>parse</code> method specializing on <code>string</code>, we transform the content into usable pieces. We do so on strings instead of working directly with buffers because this makes it easier to test the actual parsing code in an environment like an interpreter or REPL.</p>
+<p>The parsing process is:</p>
+<ol type="1">
+<li>Split on <code>"\\r?\\n"</code>.</li>
+<li>Split the first line of that on <code>" "</code> to get the request type (<code>POST</code>, <code>GET</code>, etc)/URI path/http-version.</li>
+<li>Assert that we’re dealing with an <code>HTTP/1.1</code> request.</li>
+<li>Split the URI path on <code>"?"</code>, which gives us plain resource separate from any <code>GET</code> parameters.</li>
+<li>Make a new <code>request</code> instance with the resource in place.</li>
+<li>Populate that <code>request</code> instance with each split header line.</li>
+<li>Set that <code>request</code>s parameters to the result of parsing our <code>GET</code> parameters.</li>
+</ol>
+<p>As you might expect by now, <code>request</code> is an instance of a CLOS class:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>    (<span class="kw">defclass</span><span class="fu"> request </span>()</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>      ((resource :accessor resource :initarg :resource)</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>       (headers :accessor headers :initarg :headers :initform <span class="kw">nil</span>)</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>       (parameters :accessor parameters :initarg :parameters :initform <span class="kw">nil</span>)))</span></code></pre></div>
+<p>We’ve now seen how our clients can send requests and have them interpreted and handled by our server. The last thing we have to implement as part of our core server interface is the capability to write responses back to the client.</p>
+<h3 id="rendering-responses">Rendering Responses</h3>
+<p>Before we discuss rendering responses, we have to consider that there are two kinds of responses that we may be returning to our clients. The first is a “normal” HTTP response, complete with HTTP headers and body. We represent these kinds of responses with instances of the <code>response</code> class:</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defclass</span><span class="fu"> response </span>()</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>  ((content-type</span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>    :accessor content-type :initform <span class="st">&quot;text/html&quot;</span> :initarg :content-type)</span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>   (charset</span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>    :accessor charset :initform <span class="st">&quot;utf-8&quot;</span>)</span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>   (response-code</span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>    :accessor response-code :initform <span class="st">&quot;200 OK&quot;</span> :initarg :response-code)</span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>   (keep-alive?</span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a>    :accessor keep-alive? :initform <span class="kw">nil</span> :initarg :keep-alive?)</span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>   (body</span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>    :accessor body :initform <span class="kw">nil</span> :initarg :body)))</span></code></pre></div>
+<p>The second is an <a href="http://www.w3.org/TR/eventsource/">SSE message</a>, which we will use to send an incremental update to our clients.</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defclass</span><span class="fu"> sse </span>()</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>  ((id :reader id :initarg :id :initform <span class="kw">nil</span>)</span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>   (event :reader event :initarg :event :initform <span class="kw">nil</span>)</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>   (retry :reader retry :initarg :retry :initform <span class="kw">nil</span>)</span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>   (data :reader data :initarg :data)))</span></code></pre></div>
+<p>We’ll send an HTTP response whenever we receive a full HTTP request; however, how do we know when and where to send SSE messages without an originating client request?</p>
+<p>A simple solution is to register <em>channels</em><a href="#fn7" class="footnote-ref" id="fnref7" role="doc-noteref"><sup>7</sup></a>, to which we’ll subscribe <code>socket</code>s as necessary.</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defparameter</span><span class="fu"> *channels* </span>(<span class="kw">make-hash-table</span>))</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> subscribe</span>! ((channel <span class="kw">symbol</span>) (sock usocket))</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">push</span> sock (<span class="kw">gethash</span> channel *channels*))</span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>  <span class="kw">nil</span>)</span></code></pre></div>
+<p>We can then <code>publish!</code> notifications to said channels as soon as they become available.</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> publish</span>! ((channel <span class="kw">symbol</span>) (message <span class="kw">string</span>))</span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>  (awhen (<span class="kw">gethash</span> channel *channels*)</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>     (<span class="kw">setf</span> (<span class="kw">gethash</span> channel *channels*)</span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>           (<span class="kw">loop</span> with msg <span class="op">=</span> (<span class="kw">make-instance</span> &#39;sse :data message)</span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>          for sock in it</span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>          <span class="kw">when</span> (<span class="kw">ignore-errors</span></span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>             (write! msg sock)</span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a>             (<span class="kw">force-output</span> (socket-stream sock))</span>
+<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a>             sock)</span>
+<span id="cb13-10"><a href="#cb13-10" aria-hidden="true" tabindex="-1"></a>          collect it))))</span></code></pre></div>
+<p>In <code>publish!</code>, we call <code>write!</code> to actually write an <code>sse</code> to a socket. We’ll also need a specialization of <code>write!</code> on <code>response</code>s to write full HTTP responses as well. Let’s handle the HTTP case first.</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> write</span>! ((res response) (socket usocket))</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">handler-case</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>      (with-timeout (.<span class="dv">2</span>)</span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>    (<span class="kw">let</span> ((<span class="kw">stream</span> (flex-stream socket)))</span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">flet</span> ((write-ln (&amp;<span class="kw">rest</span> sequences)</span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>           (<span class="kw">mapc</span> (<span class="kw">lambda</span> (seq) (<span class="kw">write-sequence</span> seq <span class="kw">stream</span>)) sequences)</span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>           (crlf <span class="kw">stream</span>)))</span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>        (write-ln <span class="st">&quot;HTTP/1.1 &quot;</span> (response-code res))</span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a>        (write-ln</span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>         <span class="st">&quot;Content-Type: &quot;</span> (content-type res) <span class="st">&quot;; charset=&quot;</span> (charset res))</span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a>        (write-ln <span class="st">&quot;Cache-Control: no-cache, no-store, must-revalidate&quot;</span>)</span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a>        (<span class="kw">when</span> (keep-alive? res)</span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a>          (write-ln <span class="st">&quot;Connection: keep-alive&quot;</span>)</span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a>          (write-ln <span class="st">&quot;Expires: Thu, 01 Jan 1970 00:00:01 GMT&quot;</span>))</span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a>        (awhen (body res)</span>
+<span id="cb14-16"><a href="#cb14-16" aria-hidden="true" tabindex="-1"></a>          (write-ln <span class="st">&quot;Content-Length: &quot;</span> (<span class="kw">write-to-string</span> (<span class="kw">length</span> it)))</span>
+<span id="cb14-17"><a href="#cb14-17" aria-hidden="true" tabindex="-1"></a>          (crlf <span class="kw">stream</span>)</span>
+<span id="cb14-18"><a href="#cb14-18" aria-hidden="true" tabindex="-1"></a>          (write-ln it))</span>
+<span id="cb14-19"><a href="#cb14-19" aria-hidden="true" tabindex="-1"></a>        (<span class="kw">values</span>))))</span>
+<span id="cb14-20"><a href="#cb14-20" aria-hidden="true" tabindex="-1"></a>    (trivial-timeout:timeout-error ()</span>
+<span id="cb14-21"><a href="#cb14-21" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">values</span>))))</span></code></pre></div>
+<p>This version of <code>write!</code> takes a <code>response</code> and a <code>usocket</code> named <code>sock</code>, and writes content to a stream provided by <code>sock</code>. We locally define the function <code>write-ln</code> which takes some number of sequences, and writes them out to the stream followed by a <code>crlf</code>. This is for readability; we could instead have called <code>write-sequence</code>/<code>crlf</code> directly.</p>
+<p>Note that we’re doing the “Must not block” thing again. While writes are likely to be buffered and are at lower risk of blocking than reads, we still don’t want our server to grind to a halt if something goes wrong here. If the write takes more than 0.2 seconds<a href="#fn8" class="footnote-ref" id="fnref8" role="doc-noteref"><sup>8</sup></a>, we just move on (throwing out the current socket) rather than waiting any longer.</p>
+<p>Writing an <code>SSE</code> out is conceptually similar to writing out a <code>response</code>:</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> write</span>! ((res sse) (socket usocket))</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">let</span> ((<span class="kw">stream</span> (flex-stream socket)))</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>    (<span class="kw">handler-case</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>    (with-timeout (.<span class="dv">2</span>)</span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">format</span></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>       <span class="kw">stream</span> <span class="st">&quot;~@[id: ~a~%~]~@[event: ~a~%~]~@[retry: ~a~%~]data: ~a~%~%&quot;</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>       (id res) (event res) (retry res) (data res)))</span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>      (trivial-timeout:timeout-error ()</span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a>        (<span class="kw">values</span>)))))</span></code></pre></div>
+<p>This is simpler than working with full HTTP responses since the SSE message standard doesn’t specify <code>CRLF</code> line-endings, so we can get away with a single <code>format</code> call. The <code>~@[</code>…<code>~]</code> blocks are <em>conditional directives</em>, which allow us to gracefully handle <code>nil</code> slots. For example, if <code>(id res)</code> is non-nil, we’ll output <code>id: &lt;the id here&gt;</code>, otherwise we will ignore the directive entirely. The payload of our incremental update <code>data</code> is the only required slot of <code>sse</code>, so we can include it without worrying about it being <code>nil</code>. And again, we’re not waiting around for <em>too</em> long. After 0.2 seconds, we’ll time out and move on to the next thing if the write hasn’t completed by then.</p>
+<h3 id="error-responses">Error Responses</h3>
+<p>Our treatment of the request/response cycle so far hasn’t covered what happens when something goes wrong. Specifically, we used the <code>error!</code> function in <code>handle-request</code> and <code>process-ready</code> without describing what it does.</p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">define-condition</span><span class="fu"> http-assertion-error </span>(<span class="kw">error</span>)</span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>  ((assertion :initarg :assertion :initform <span class="kw">nil</span> :reader assertion))</span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>  (:report (<span class="kw">lambda</span> (<span class="kw">condition</span> <span class="kw">stream</span>)</span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>         (<span class="kw">format</span> <span class="kw">stream</span> <span class="st">&quot;Failed assertions &#39;~s&#39;&quot;</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>             (assertion <span class="kw">condition</span>)))))</span></code></pre></div>
+<p><code>define-condition</code> creates new error classes in Common Lisp. In this case, we are defining an HTTP assertion error, and stating that it will specifically need to know the actual assertion it’s acting on, and a way to output itself to a stream. In other languages, you’d call this a method. Here, it’s a function that happens to be the slot value of a class.</p>
+<p>How do we represent errors to the client? Let’s define the <code>4xx</code> and <code>5xx</code>-class HTTP errors that we’ll be using often:</p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defparameter</span><span class="fu"> +404+</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">make-instance</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>   &#39;response :response-code <span class="st">&quot;404 Not Found&quot;</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>   :content-type <span class="st">&quot;text/plain&quot;</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>   :body <span class="st">&quot;Resource not found...&quot;</span>))</span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defparameter</span><span class="fu"> +400+</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">make-instance</span></span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>   &#39;response :response-code <span class="st">&quot;400 Bad Request&quot;</span></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a>   :content-type <span class="st">&quot;text/plain&quot;</span></span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>   :body <span class="st">&quot;Malformed, or slow HTTP request...&quot;</span>))</span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defparameter</span><span class="fu"> +413+</span></span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">make-instance</span></span>
+<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a>   &#39;response :response-code <span class="st">&quot;413 Request Entity Too Large&quot;</span></span>
+<span id="cb17-16"><a href="#cb17-16" aria-hidden="true" tabindex="-1"></a>   :content-type <span class="st">&quot;text/plain&quot;</span></span>
+<span id="cb17-17"><a href="#cb17-17" aria-hidden="true" tabindex="-1"></a>   :body <span class="st">&quot;Your request is too long...&quot;</span>))</span>
+<span id="cb17-18"><a href="#cb17-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-19"><a href="#cb17-19" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defparameter</span><span class="fu"> +500+</span></span>
+<span id="cb17-20"><a href="#cb17-20" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">make-instance</span></span>
+<span id="cb17-21"><a href="#cb17-21" aria-hidden="true" tabindex="-1"></a>   &#39;response :response-code <span class="st">&quot;500 Internal Server Error&quot;</span></span>
+<span id="cb17-22"><a href="#cb17-22" aria-hidden="true" tabindex="-1"></a>   :content-type <span class="st">&quot;text/plain&quot;</span></span>
+<span id="cb17-23"><a href="#cb17-23" aria-hidden="true" tabindex="-1"></a>   :body <span class="st">&quot;Something went wrong on our end...&quot;</span>))</span></code></pre></div>
+<p>Now we can see what <code>error!</code> does:</p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> error</span>! ((err response) (sock usocket) &amp;optional instance)</span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">declare</span> (<span class="kw">ignorable</span> instance))</span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">ignore-errors</span></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>    (write! err sock)</span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>    (socket-close sock)))</span></code></pre></div>
+<p>It takes an error response and a socket, writes the response to the socket and closes it (ignoring errors, in case the other end has already disconnected). The <code>instance</code> argument here is for logging/debugging purposes.</p>
+<p>And with that, we have an event-driven web server that can respond to HTTP requests or send SSE messages, complete with error handling!</p>
+<h2 id="extending-the-server-into-a-web-framework">Extending the Server Into a Web Framework</h2>
+<p>We have now built a reasonably functional web server that will move requests, responses, and messages to and from clients. The actual work of any web application hosted by this server is done by delegating to handler functions, which were introduced in <a href="#sec.eventsweb.handlerfunc">Interpreting Requests</a> but left underspecified.</p>
+<p>The interface between our server and the hosted application is an important one, because it dictates how easily application programmers can work with our infrastructure. Ideally, our handler interface would map parameters from a request to a function that does the real work:</p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a>(define-handler (source :is-stream? <span class="kw">nil</span>) (<span class="kw">room</span>)</span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>  (subscribe! (<span class="kw">intern</span> <span class="kw">room</span> :keyword) sock))</span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>(define-handler (send-message) (<span class="kw">room</span> name message)</span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>  (publish! (<span class="kw">intern</span> <span class="kw">room</span> :keyword)</span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a>        (encode-json-to-string</span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a>         `((<span class="bu">:name</span> . ,name) (:message . ,message)))))</span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a>(define-handler (index) ()</span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a>  (with-html-output-to-string (s <span class="kw">nil</span> :prologue <span class="kw">t</span> :indent <span class="kw">t</span>)</span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a>    (:html</span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a>     (:head (:script</span>
+<span id="cb19-13"><a href="#cb19-13" aria-hidden="true" tabindex="-1"></a>         <span class="bu">:type</span> <span class="st">&quot;text/javascript&quot;</span></span>
+<span id="cb19-14"><a href="#cb19-14" aria-hidden="true" tabindex="-1"></a>         :src <span class="st">&quot;/static/js/interface.js&quot;</span>))</span>
+<span id="cb19-15"><a href="#cb19-15" aria-hidden="true" tabindex="-1"></a>     (:body (:div :id <span class="st">&quot;messages&quot;</span>)</span>
+<span id="cb19-16"><a href="#cb19-16" aria-hidden="true" tabindex="-1"></a>        (:textarea :id <span class="st">&quot;input&quot;</span>)</span>
+<span id="cb19-17"><a href="#cb19-17" aria-hidden="true" tabindex="-1"></a>        (:button :id <span class="st">&quot;send&quot;</span> <span class="st">&quot;Send&quot;</span>)))))</span></code></pre></div>
+<p>One of the concerns I had in mind when writing House was that, like any application open to the greater internet, it would be processing requests from untrusted clients. It would be nice to be able to say specifically what <em>type</em> of data each request should contain by providing a small <em>schema</em> that describes the data. Our previous list of handlers would then look like this:</p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defun</span><span class="fu"> len-between </span>(<span class="kw">min</span> thing <span class="kw">max</span>)</span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>  (<span class="op">&gt;=</span> <span class="kw">max</span> (<span class="kw">length</span> thing) <span class="kw">min</span>))</span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a>(define-handler (source :is-stream? <span class="kw">nil</span>)</span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a>    ((<span class="kw">room</span> :string (len-between <span class="dv">0</span> <span class="kw">room</span> <span class="dv">16</span>)))</span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a>  (subscribe! (<span class="kw">intern</span> <span class="kw">room</span> :keyword) sock))</span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a>(define-handler (send-message)</span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a>    ((<span class="kw">room</span> :string (len-between <span class="dv">0</span> <span class="kw">room</span> <span class="dv">16</span>))</span>
+<span id="cb20-10"><a href="#cb20-10" aria-hidden="true" tabindex="-1"></a>     (name :string (len-between <span class="dv">1</span> name <span class="dv">64</span>))</span>
+<span id="cb20-11"><a href="#cb20-11" aria-hidden="true" tabindex="-1"></a>     (message :string (len-between <span class="dv">5</span> message <span class="dv">256</span>)))</span>
+<span id="cb20-12"><a href="#cb20-12" aria-hidden="true" tabindex="-1"></a>  (publish! (<span class="kw">intern</span> <span class="kw">room</span> :keyword)</span>
+<span id="cb20-13"><a href="#cb20-13" aria-hidden="true" tabindex="-1"></a>        (encode-json-to-string</span>
+<span id="cb20-14"><a href="#cb20-14" aria-hidden="true" tabindex="-1"></a>         `((<span class="bu">:name</span> . ,name) (:message . ,message)))))</span>
+<span id="cb20-15"><a href="#cb20-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-16"><a href="#cb20-16" aria-hidden="true" tabindex="-1"></a>(define-handler (index) ()</span>
+<span id="cb20-17"><a href="#cb20-17" aria-hidden="true" tabindex="-1"></a>  (with-html-output-to-string (s <span class="kw">nil</span> :prologue <span class="kw">t</span> :indent <span class="kw">t</span>)</span>
+<span id="cb20-18"><a href="#cb20-18" aria-hidden="true" tabindex="-1"></a>    (:html</span>
+<span id="cb20-19"><a href="#cb20-19" aria-hidden="true" tabindex="-1"></a>     (:head (:script</span>
+<span id="cb20-20"><a href="#cb20-20" aria-hidden="true" tabindex="-1"></a>         <span class="bu">:type</span> <span class="st">&quot;text/javascript&quot;</span></span>
+<span id="cb20-21"><a href="#cb20-21" aria-hidden="true" tabindex="-1"></a>         :src <span class="st">&quot;/static/js/interface.js&quot;</span>))</span>
+<span id="cb20-22"><a href="#cb20-22" aria-hidden="true" tabindex="-1"></a>     (:body (:div :id <span class="st">&quot;messages&quot;</span>)</span>
+<span id="cb20-23"><a href="#cb20-23" aria-hidden="true" tabindex="-1"></a>        (:textarea :id <span class="st">&quot;input&quot;</span>)</span>
+<span id="cb20-24"><a href="#cb20-24" aria-hidden="true" tabindex="-1"></a>        (:button :id <span class="st">&quot;send&quot;</span> <span class="st">&quot;Send&quot;</span>)))))</span></code></pre></div>
+<p>While we are still working with Lisp code, this interface is starting to look almost like a <em>declarative language</em>, in which we state <em>what</em> we want our handlers to validate without thinking too much about <em>how</em> they are going to do it. What we are doing is building a <em>domain-specific language</em> (DSL) for handler functions; that is, we are creating a specific convention and syntax that allows us to concisely express exactly what we want our handlers to validate. This approach of building a small language to solve the problem at hand is frequently used by Lisp programmers, and it is a useful technique that can be applied in other programming languages.</p>
+<h3 id="a-dsl-for-handlers">A DSL for Handlers</h3>
+<p>Now that we have a loose specification for how we want our handler DSL to look, how do we implement it? That is, what specifically do we expect to happen when we call <code>define-handler</code>? Let’s consider the definition for <code>send-message</code> from above:</p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a>(define-handler (send-message)</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>    ((<span class="kw">room</span> :string (len-between <span class="dv">0</span> <span class="kw">room</span> <span class="dv">16</span>))</span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>     (name :string (len-between <span class="dv">1</span> name <span class="dv">64</span>))</span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>     (message :string (len-between <span class="dv">5</span> message <span class="dv">256</span>)))</span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>  (publish! (<span class="kw">intern</span> <span class="kw">room</span> :keyword)</span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>        (encode-json-to-string</span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>         `((<span class="bu">:name</span> . ,name) (:message . ,message)))))</span></code></pre></div>
+<p>What we would like <code>define-handler</code> to do here is:</p>
+<ol type="1">
+<li>Bind the action <code>(publish! ...)</code> to the URI <code>/send-message</code> in the handlers table.</li>
+<li>When a request to this URI is made:
+<ul>
+<li>Ensure that the HTTP parameters <code>room</code>, <code>name</code> and <code>message</code> were included.</li>
+<li>Validate that <code>room</code> is a string no longer than 16 characters, <code>name</code> is a string of between 1 and 64 characters (inclusive) and that <code>message</code> is a string of between 5 and 256 characters (also inclusive).</li>
+</ul></li>
+<li>After the response has been returned, close the channel.</li>
+</ol>
+<p>While we could write Lisp functions to do all of these things, and then manually assemble the pieces ourselves, a more common approach is to use a Lisp facility called <code>macros</code> to <em>generate</em> the Lisp code for us. This allows us to concisely express what we want our DSL to do, without having to maintain a lot of code to do it. You can think of a macro as an “executable template” that will be expanded into Lisp code at runtime.</p>
+<p>Here’s our <code>define-handler</code> macro<a href="#fn9" class="footnote-ref" id="fnref9" role="doc-noteref"><sup>9</sup></a>:</p>
+<div class="sourceCode" id="cb22"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmacro</span><span class="fu"> define-handler</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>    ((name &amp;key (is-stream? <span class="kw">t</span>) (content-type <span class="st">&quot;text/html&quot;</span>)) (&amp;<span class="kw">rest</span> args)</span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a>     &amp;body body)</span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">if</span> is-stream?</span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a>      `(bind-handler</span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a>    ,name (make-closing-handler</span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a>           (:content-type ,content-type)</span>
+<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a>           ,args ,@body))</span>
+<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a>      `(bind-handler</span>
+<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a>    ,name (make-stream-handler ,args ,@body))))</span></code></pre></div>
+<p>It delegates to three other macros (<code>bind-handler</code>, <code>make-closing-handler</code>, <code>make-stream-handler</code>) that we will define later. <code>make-closing-handler</code> will create a handler for a full HTTP request/response cycle; <code>make-stream-handler</code> will instead handle an SSE message. The predicate <code>is-stream?</code> distinguishes between these cases for us. The backtick and comma are macro-specific operators that we can use to “cut holes” in our code that will be filled out by values specified in our Lisp code when we actually use <code>define-handler</code>.</p>
+<p>Notice how closely our macro conforms to our specification of what we wanted <code>define-handler</code> to do: If we were to write a series of Lisp functions to do all of these things, the intent of the code would be much more difficult to discern by inspection.</p>
+<h3 id="expanding-a-handler">Expanding a Handler</h3>
+<p>Let’s step through the expansion for the <code>send-message</code> handler so that we better understand what is actually going on when Lisp “expands” our macro for us. We’ll use the macro expansion feature from the <a href="https://common-lisp.net/project/slime/">SLIME</a> Emacs mode to do this. Calling <code>macro-expander</code> on <code>define-handler</code> will expand our macro by one “level”, leaving our helper macros in their still-condensed form:</p>
+<div class="sourceCode" id="cb23"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a>(BIND-HANDLER</span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a> SEND-MESSAGE</span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a> (MAKE-CLOSING-HANDLER</span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>  (:CONTENT-TYPE <span class="st">&quot;text/html&quot;</span>)</span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a>  ((ROOM :STRING (LEN-BETWEEN <span class="dv">0</span> ROOM <span class="dv">16</span>))</span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a>   (NAME :STRING (LEN-BETWEEN <span class="dv">1</span> NAME <span class="dv">64</span>))</span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a>   (MESSAGE :STRING (LEN-BETWEEN <span class="dv">5</span> MESSAGE <span class="dv">256</span>)))</span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a>  (PUBLISH! (INTERN ROOM :KEYWORD)</span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a>        (ENCODE-JSON-TO-STRING</span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a>         `((:NAME ,@NAME) (:MESSAGE ,@MESSAGE))))))</span></code></pre></div>
+<p>Our macro has already saved us a bit of typing by substituting our <code>send-message</code> specific code into our handler template. <code>bind-handler</code> is another macro which maps a URI to a handler function on our handlers table; since it’s now at the root of our expansion, let’s see how it is defined before expanding this further.</p>
+<div class="sourceCode" id="cb24"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmacro</span><span class="fu"> bind-handler </span>(name handler)</span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">assert</span> (<span class="kw">symbolp</span> name) <span class="kw">nil</span> <span class="st">&quot;`name` must be a symbol&quot;</span>)</span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">let</span> ((uri (<span class="kw">if</span> (<span class="kw">eq</span> name &#39;root) <span class="st">&quot;/&quot;</span> (<span class="kw">format</span> <span class="kw">nil</span> <span class="st">&quot;/~(~a~)&quot;</span> name))))</span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a>    `(<span class="kw">progn</span></span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a>       (<span class="kw">when</span> (<span class="kw">gethash</span> ,uri *handlers*)</span>
+<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a>     (<span class="kw">warn</span> ,(<span class="kw">format</span> <span class="kw">nil</span> <span class="st">&quot;Redefining handler &#39;~a&#39;&quot;</span> uri)))</span>
+<span id="cb24-7"><a href="#cb24-7" aria-hidden="true" tabindex="-1"></a>       (<span class="kw">setf</span> (<span class="kw">gethash</span> ,uri *handlers*) ,handler))))</span></code></pre></div>
+<p>The binding happens in the last line: <code>(setf (gethash ,uri *handlers*) ,handler)</code>, which is what hash-table assignments look like in Common Lisp (modulo the commas, which are part of our macro). Note that the <code>assert</code> is outside of the quoted area, which means that it’ll be run as soon as the macro is <em>called</em> rather than when its result is evaluated.</p>
+<p>When we further expand our expansion of the <code>send-message</code> <code>define-handler</code> above, we get:</p>
+<div class="sourceCode" id="cb25"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a>(PROGN</span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>  (WHEN (GETHASH <span class="st">&quot;/send-message&quot;</span> *HANDLERS*)</span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>    (WARN <span class="st">&quot;Redefining handler &#39;/send-message&#39;&quot;</span>))</span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a>  (SETF (GETHASH <span class="st">&quot;/send-message&quot;</span> *HANDLERS*)</span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a>    (MAKE-CLOSING-HANDLER</span>
+<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a>     (:CONTENT-TYPE <span class="st">&quot;text/html&quot;</span>)</span>
+<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a>     ((ROOM :STRING (LEN-BETWEEN <span class="dv">0</span> ROOM <span class="dv">16</span>))</span>
+<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a>      (NAME :STRING (LEN-BETWEEN <span class="dv">1</span> NAME <span class="dv">64</span>))</span>
+<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a>      (MESSAGE :STRING (LEN-BETWEEN <span class="dv">5</span> MESSAGE <span class="dv">256</span>)))</span>
+<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a>     (PUBLISH! (INTERN ROOM :KEYWORD)</span>
+<span id="cb25-11"><a href="#cb25-11" aria-hidden="true" tabindex="-1"></a>           (ENCODE-JSON-TO-STRING</span>
+<span id="cb25-12"><a href="#cb25-12" aria-hidden="true" tabindex="-1"></a>            `((:NAME ,@NAME) (:MESSAGE ,@MESSAGE)))))))</span></code></pre></div>
+<p>This is starting to look more like a custom implementation of what we would have written to marshal a request from a URI to a handler function, had we written it all ourselves. But we didn’t have to!</p>
+<p>We still have <code>make-closing-handler</code> left to go in our expansion. Here is its definition:</p>
+<div class="sourceCode" id="cb26"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmacro</span><span class="fu"> make-closing-handler</span></span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>    ((&amp;key (content-type <span class="st">&quot;text/html&quot;</span>)) (&amp;<span class="kw">rest</span> args) &amp;body body)</span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>  `(<span class="kw">lambda</span> (sock parameters)</span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a>     (<span class="kw">declare</span> (<span class="kw">ignorable</span> parameters))</span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a>     ,(arguments</span>
+<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a>       args</span>
+<span id="cb26-7"><a href="#cb26-7" aria-hidden="true" tabindex="-1"></a>       `(<span class="kw">let</span> ((res (<span class="kw">make-instance</span></span>
+<span id="cb26-8"><a href="#cb26-8" aria-hidden="true" tabindex="-1"></a>            &#39;response</span>
+<span id="cb26-9"><a href="#cb26-9" aria-hidden="true" tabindex="-1"></a>            :content-type ,content-type</span>
+<span id="cb26-10"><a href="#cb26-10" aria-hidden="true" tabindex="-1"></a>            :body (<span class="kw">progn</span> ,@body))))</span>
+<span id="cb26-11"><a href="#cb26-11" aria-hidden="true" tabindex="-1"></a>      (write! res sock)</span>
+<span id="cb26-12"><a href="#cb26-12" aria-hidden="true" tabindex="-1"></a>      (socket-close sock)))))</span></code></pre></div>
+<p>So making a closing-handler involves making a <code>lambda</code>, which is just what you call anonymous functions in Common Lisp. We also set up an interior scope that makes a <code>response</code> out of the <code>body</code> argument we’re passing in, performs a <code>write!</code> to the requesting socket, then closes it. The remaining question is, what is <code>arguments</code>?</p>
+<div class="sourceCode" id="cb27"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defun</span><span class="fu"> arguments </span>(args body)</span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">loop</span> with res <span class="op">=</span> body</span>
+<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a>     for arg in args</span>
+<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a>     <span class="kw">do</span> (match arg</span>
+<span id="cb27-5"><a href="#cb27-5" aria-hidden="true" tabindex="-1"></a>     ((guard arg-sym (<span class="kw">symbolp</span> arg-sym))</span>
+<span id="cb27-6"><a href="#cb27-6" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">setf</span> res `(<span class="kw">let</span> ((,arg-sym ,(arg-exp arg-sym))) ,res)))</span>
+<span id="cb27-7"><a href="#cb27-7" aria-hidden="true" tabindex="-1"></a>     ((<span class="kw">list*</span> arg-sym <span class="kw">type</span> restrictions)</span>
+<span id="cb27-8"><a href="#cb27-8" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">setf</span> res</span>
+<span id="cb27-9"><a href="#cb27-9" aria-hidden="true" tabindex="-1"></a>        (<span class="kw">let</span> ((sym (<span class="kw">or</span> (type-expression</span>
+<span id="cb27-10"><a href="#cb27-10" aria-hidden="true" tabindex="-1"></a>                (arg-exp arg-sym)</span>
+<span id="cb27-11"><a href="#cb27-11" aria-hidden="true" tabindex="-1"></a>                <span class="kw">type</span> restrictions)</span>
+<span id="cb27-12"><a href="#cb27-12" aria-hidden="true" tabindex="-1"></a>                   (arg-exp arg-sym))))</span>
+<span id="cb27-13"><a href="#cb27-13" aria-hidden="true" tabindex="-1"></a>          `(<span class="kw">let</span> ((,arg-sym ,sym))</span>
+<span id="cb27-14"><a href="#cb27-14" aria-hidden="true" tabindex="-1"></a>             ,@(awhen (type-assertion arg-sym <span class="kw">type</span> restrictions)</span>
+<span id="cb27-15"><a href="#cb27-15" aria-hidden="true" tabindex="-1"></a>             `((assert-http ,it)))</span>
+<span id="cb27-16"><a href="#cb27-16" aria-hidden="true" tabindex="-1"></a>             ,res)))))</span>
+<span id="cb27-17"><a href="#cb27-17" aria-hidden="true" tabindex="-1"></a>     finally (<span class="kw">return</span> res)))</span></code></pre></div>
+<p>Welcome to the hard part. <code>arguments</code> turns the validators we registered with our handler into a tree of parse attempts and assertions. <code>type-expression</code>, <code>arg-exp</code>, and <code>type-assertion</code> are used to implement and enforce a “type system” for the kinds of data we’re expecting in our responses; we’ll discuss them in <a href="#sec.eventsweb.types">HTTP “Types”</a>. Using this together with <code>make-closing-handler</code> would implement the validation rules we wrote here:</p>
+<div class="sourceCode" id="cb28"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a>(define-handler (send-message)</span>
+<span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a>    ((<span class="kw">room</span> :string (<span class="op">&gt;=</span> <span class="dv">16</span> (<span class="kw">length</span> <span class="kw">room</span>)))</span>
+<span id="cb28-3"><a href="#cb28-3" aria-hidden="true" tabindex="-1"></a>     (name :string (<span class="op">&gt;=</span> <span class="dv">64</span> (<span class="kw">length</span> name) <span class="dv">1</span>))</span>
+<span id="cb28-4"><a href="#cb28-4" aria-hidden="true" tabindex="-1"></a>     (message :string (<span class="op">&gt;=</span> <span class="dv">256</span> (<span class="kw">length</span> message) <span class="dv">5</span>)))</span>
+<span id="cb28-5"><a href="#cb28-5" aria-hidden="true" tabindex="-1"></a>  (publish! (<span class="kw">intern</span> <span class="kw">room</span> :keyword)</span>
+<span id="cb28-6"><a href="#cb28-6" aria-hidden="true" tabindex="-1"></a>        (encode-json-to-string</span>
+<span id="cb28-7"><a href="#cb28-7" aria-hidden="true" tabindex="-1"></a>         `((<span class="bu">:name</span> . ,name) (:message . ,message)))))</span></code></pre></div>
+<p>…as an “unrolled” sequence of checks needed to validate the request:</p>
+<div class="sourceCode" id="cb29"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a>(LAMBDA (SOCK #:COOKIE?<span class="dv">1111</span> SESSION PARAMETERS)</span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a>  (DECLARE (IGNORABLE SESSION PARAMETERS))</span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a>  (LET ((ROOM (AIF (CDR (ASSOC :ROOM PARAMETERS))</span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a>           (URI-DECODE IT)</span>
+<span id="cb29-5"><a href="#cb29-5" aria-hidden="true" tabindex="-1"></a>           (ERROR (MAKE-INSTANCE</span>
+<span id="cb29-6"><a href="#cb29-6" aria-hidden="true" tabindex="-1"></a>               &#39;HTTP-ASSERTION-ERROR</span>
+<span id="cb29-7"><a href="#cb29-7" aria-hidden="true" tabindex="-1"></a>               :ASSERTION &#39;ROOM)))))</span>
+<span id="cb29-8"><a href="#cb29-8" aria-hidden="true" tabindex="-1"></a>    (ASSERT-HTTP (<span class="op">&gt;=</span> <span class="dv">16</span> (LENGTH ROOM)))</span>
+<span id="cb29-9"><a href="#cb29-9" aria-hidden="true" tabindex="-1"></a>    (LET ((NAME (AIF (CDR (ASSOC :NAME PARAMETERS))</span>
+<span id="cb29-10"><a href="#cb29-10" aria-hidden="true" tabindex="-1"></a>             (URI-DECODE IT)</span>
+<span id="cb29-11"><a href="#cb29-11" aria-hidden="true" tabindex="-1"></a>             (ERROR (MAKE-INSTANCE</span>
+<span id="cb29-12"><a href="#cb29-12" aria-hidden="true" tabindex="-1"></a>                 &#39;HTTP-ASSERTION-ERROR</span>
+<span id="cb29-13"><a href="#cb29-13" aria-hidden="true" tabindex="-1"></a>                 :ASSERTION &#39;NAME)))))</span>
+<span id="cb29-14"><a href="#cb29-14" aria-hidden="true" tabindex="-1"></a>      (ASSERT-HTTP (<span class="op">&gt;=</span> <span class="dv">64</span> (LENGTH NAME) <span class="dv">1</span>))</span>
+<span id="cb29-15"><a href="#cb29-15" aria-hidden="true" tabindex="-1"></a>      (LET ((MESSAGE (AIF (CDR (ASSOC :MESSAGE PARAMETERS))</span>
+<span id="cb29-16"><a href="#cb29-16" aria-hidden="true" tabindex="-1"></a>              (URI-DECODE IT)</span>
+<span id="cb29-17"><a href="#cb29-17" aria-hidden="true" tabindex="-1"></a>              (ERROR (MAKE-INSTANCE</span>
+<span id="cb29-18"><a href="#cb29-18" aria-hidden="true" tabindex="-1"></a>                  &#39;HTTP-ASSERTION-ERROR</span>
+<span id="cb29-19"><a href="#cb29-19" aria-hidden="true" tabindex="-1"></a>                  :ASSERTION &#39;MESSAGE)))))</span>
+<span id="cb29-20"><a href="#cb29-20" aria-hidden="true" tabindex="-1"></a>    (ASSERT-HTTP (<span class="op">&gt;=</span> <span class="dv">256</span> (LENGTH MESSAGE) <span class="dv">5</span>))</span>
+<span id="cb29-21"><a href="#cb29-21" aria-hidden="true" tabindex="-1"></a>    (LET ((RES (MAKE-INSTANCE</span>
+<span id="cb29-22"><a href="#cb29-22" aria-hidden="true" tabindex="-1"></a>            &#39;RESPONSE :CONTENT-TYPE <span class="st">&quot;text/html&quot;</span></span>
+<span id="cb29-23"><a href="#cb29-23" aria-hidden="true" tabindex="-1"></a>            :COOKIE (UNLESS #:COOKIE?<span class="dv">1111</span></span>
+<span id="cb29-24"><a href="#cb29-24" aria-hidden="true" tabindex="-1"></a>                  (TOKEN SESSION))</span>
+<span id="cb29-25"><a href="#cb29-25" aria-hidden="true" tabindex="-1"></a>            :BODY (PROGN</span>
+<span id="cb29-26"><a href="#cb29-26" aria-hidden="true" tabindex="-1"></a>                (PUBLISH!</span>
+<span id="cb29-27"><a href="#cb29-27" aria-hidden="true" tabindex="-1"></a>                 (INTERN ROOM :KEYWORD)</span>
+<span id="cb29-28"><a href="#cb29-28" aria-hidden="true" tabindex="-1"></a>                 (ENCODE-JSON-TO-STRING</span>
+<span id="cb29-29"><a href="#cb29-29" aria-hidden="true" tabindex="-1"></a>                  `((:NAME ,@NAME)</span>
+<span id="cb29-30"><a href="#cb29-30" aria-hidden="true" tabindex="-1"></a>                (:MESSAGE ,@MESSAGE))))))))</span>
+<span id="cb29-31"><a href="#cb29-31" aria-hidden="true" tabindex="-1"></a>      (WRITE! RES SOCK)</span>
+<span id="cb29-32"><a href="#cb29-32" aria-hidden="true" tabindex="-1"></a>      (SOCKET-CLOSE SOCK))))))</span></code></pre></div>
+<p>This gets us the validation we need for full HTTP request/response cycles. What about our SSEs? <code>make-stream-handler</code> does the same basic thing as <code>make-closing-handler</code>, except that it writes an <code>SSE</code> rather than a <code>RESPONSE</code>, and it calls <code>force-output</code> instead of <code>socket-close</code> because we want to flush data over the connection without closing it:</p>
+<div class="sourceCode" id="cb30"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmacro</span><span class="fu"> make-stream-handler </span>((&amp;<span class="kw">rest</span> args) &amp;body body)</span>
+<span id="cb30-2"><a href="#cb30-2" aria-hidden="true" tabindex="-1"></a>  `(<span class="kw">lambda</span> (sock parameters)</span>
+<span id="cb30-3"><a href="#cb30-3" aria-hidden="true" tabindex="-1"></a>     (<span class="kw">declare</span> (<span class="kw">ignorable</span> parameters))</span>
+<span id="cb30-4"><a href="#cb30-4" aria-hidden="true" tabindex="-1"></a>     ,(arguments</span>
+<span id="cb30-5"><a href="#cb30-5" aria-hidden="true" tabindex="-1"></a>       args</span>
+<span id="cb30-6"><a href="#cb30-6" aria-hidden="true" tabindex="-1"></a>       `(<span class="kw">let</span> ((res (<span class="kw">progn</span> ,@body)))</span>
+<span id="cb30-7"><a href="#cb30-7" aria-hidden="true" tabindex="-1"></a>      (write! (<span class="kw">make-instance</span></span>
+<span id="cb30-8"><a href="#cb30-8" aria-hidden="true" tabindex="-1"></a>           &#39;response</span>
+<span id="cb30-9"><a href="#cb30-9" aria-hidden="true" tabindex="-1"></a>           :keep-alive? <span class="kw">t</span></span>
+<span id="cb30-10"><a href="#cb30-10" aria-hidden="true" tabindex="-1"></a>           :content-type <span class="st">&quot;text/event-stream&quot;</span>)</span>
+<span id="cb30-11"><a href="#cb30-11" aria-hidden="true" tabindex="-1"></a>          sock)</span>
+<span id="cb30-12"><a href="#cb30-12" aria-hidden="true" tabindex="-1"></a>      (write!</span>
+<span id="cb30-13"><a href="#cb30-13" aria-hidden="true" tabindex="-1"></a>       (<span class="kw">make-instance</span> &#39;sse :data (<span class="kw">or</span> res <span class="st">&quot;Listening...&quot;</span>))</span>
+<span id="cb30-14"><a href="#cb30-14" aria-hidden="true" tabindex="-1"></a>       sock)</span>
+<span id="cb30-15"><a href="#cb30-15" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">force-output</span></span>
+<span id="cb30-16"><a href="#cb30-16" aria-hidden="true" tabindex="-1"></a>       (socket-stream sock))))))</span>
+<span id="cb30-17"><a href="#cb30-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb30-18"><a href="#cb30-18" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmacro</span><span class="fu"> assert-http </span>(assertion)</span>
+<span id="cb30-19"><a href="#cb30-19" aria-hidden="true" tabindex="-1"></a>  `(<span class="kw">unless</span> ,assertion</span>
+<span id="cb30-20"><a href="#cb30-20" aria-hidden="true" tabindex="-1"></a>     (<span class="kw">error</span> (<span class="kw">make-instance</span></span>
+<span id="cb30-21"><a href="#cb30-21" aria-hidden="true" tabindex="-1"></a>         &#39;http-assertion-error</span>
+<span id="cb30-22"><a href="#cb30-22" aria-hidden="true" tabindex="-1"></a>         :assertion &#39;,assertion))))</span></code></pre></div>
+<p><code>assert-http</code> is a macro that creates the boilerplate code we need in error cases. It expands into a check of the given assertion, throws an <code>http-assertion-error</code> if it fails, and packs the original assertion along in that event.</p>
+<div class="sourceCode" id="cb31"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmacro</span><span class="fu"> assert-http </span>(assertion)</span>
+<span id="cb31-2"><a href="#cb31-2" aria-hidden="true" tabindex="-1"></a>  `(<span class="kw">unless</span> ,assertion</span>
+<span id="cb31-3"><a href="#cb31-3" aria-hidden="true" tabindex="-1"></a>     (<span class="kw">error</span> (<span class="kw">make-instance</span></span>
+<span id="cb31-4"><a href="#cb31-4" aria-hidden="true" tabindex="-1"></a>         &#39;http-assertion-error</span>
+<span id="cb31-5"><a href="#cb31-5" aria-hidden="true" tabindex="-1"></a>         :assertion &#39;,assertion))))</span></code></pre></div>
+<h3 id="http-types">HTTP “Types”</h3>
+<p><a name="sec.eventsweb.types"> </a></p>
+<p>In the previous section, we briefly touched on three expressions that we’re using to implement our HTTP type validation system: <code>arg-exp</code>, <code>type-expression</code> and <code>type-assertion</code>. Once you understand those, there will be no magic left in our framework. We’ll start with the easy one first.</p>
+<h4 id="arg-exp">arg-exp</h4>
+<p><code>arg-exp</code> takes a symbol and creates an <code>aif</code> expression that checks for the presence of a parameter.</p>
+<div class="sourceCode" id="cb32"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb32-1"><a href="#cb32-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defun</span><span class="fu"> arg-exp </span>(arg-sym)</span>
+<span id="cb32-2"><a href="#cb32-2" aria-hidden="true" tabindex="-1"></a>  `(aif (<span class="kw">cdr</span> (<span class="kw">assoc</span> ,(-&gt;keyword arg-sym) parameters))</span>
+<span id="cb32-3"><a href="#cb32-3" aria-hidden="true" tabindex="-1"></a>    (uri-decode it)</span>
+<span id="cb32-4"><a href="#cb32-4" aria-hidden="true" tabindex="-1"></a>    (<span class="kw">error</span> (<span class="kw">make-instance</span></span>
+<span id="cb32-5"><a href="#cb32-5" aria-hidden="true" tabindex="-1"></a>        &#39;http-assertion-error</span>
+<span id="cb32-6"><a href="#cb32-6" aria-hidden="true" tabindex="-1"></a>        :assertion &#39;,arg-sym))))</span></code></pre></div>
+<p>Evaluating <code>arg-exp</code> on a symbol looks like:</p>
+<div class="sourceCode" id="cb33"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a>HOUSE&gt; (arg-exp &#39;room)</span>
+<span id="cb33-2"><a href="#cb33-2" aria-hidden="true" tabindex="-1"></a>(AIF (CDR (ASSOC :ROOM PARAMETERS))</span>
+<span id="cb33-3"><a href="#cb33-3" aria-hidden="true" tabindex="-1"></a>     (URI-DECODE IT)</span>
+<span id="cb33-4"><a href="#cb33-4" aria-hidden="true" tabindex="-1"></a>     (ERROR (MAKE-INSTANCE</span>
+<span id="cb33-5"><a href="#cb33-5" aria-hidden="true" tabindex="-1"></a>         &#39;HTTP-ASSERTION-ERROR</span>
+<span id="cb33-6"><a href="#cb33-6" aria-hidden="true" tabindex="-1"></a>         :ASSERTION &#39;ROOM)))</span>
+<span id="cb33-7"><a href="#cb33-7" aria-hidden="true" tabindex="-1"></a>HOUSE&gt;</span></code></pre></div>
+<p>We’ve been using forms like <code>aif</code> and <code>awhen</code> without understanding how they work, so let’s take some time to explore them now.</p>
+<p>Recall that Lisp code is itself represented as a tree. That’s what the parentheses are for; they show us how leaves and branches fit together. If we step back to what we were doing in the previous section, <code>make-closing-handler</code> calls a function called <code>arguments</code> to generate part of the Lisp tree it’s constructing, which in turn calls some tree-manipulating helper functions, including <code>arg-exp</code>, to generate its return value.</p>
+<p>That is, we’ve built a small system that takes a Lisp expression as input, and produces a different Lisp expression as output. Possibly the simplest way of conceptualizing this is as a simple Common–Lisp-to-Common–Lisp compiler that is specialized to the problem at hand.</p>
+<p>A widely used classification of such compilers is as <em>anaphoric macros</em>. This term comes from the linguistic concept of an <em>anaphor</em>, which is the use of one word as a substitute for a group of words that preceded it. <code>aif</code> and <code>awhen</code> are anaphoric macros, and they’re the only ones that I tend to often use. There are many more availabile in the <a href="http://www.cliki.net/Anaphora"><code>anaphora</code> package</a>.</p>
+<p>As far as I know, anaphoric macros were first defined by Paul Graham in an <a href="http://dunsmor.com/lisp/onlisp/onlisp_18.html">OnLisp chapter</a>. The use case he gives is a situation where you want to do some sort of expensive or semi-expensive check, then do something conditionally on the result. In the above context, we’re using <code>aif</code> to do a check the result of an <code>alist</code> traversal.</p>
+<div class="sourceCode" id="cb34"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a>(aif (<span class="kw">cdr</span> (<span class="kw">assoc</span> :room parameters))</span>
+<span id="cb34-2"><a href="#cb34-2" aria-hidden="true" tabindex="-1"></a>     (uri-decode it)</span>
+<span id="cb34-3"><a href="#cb34-3" aria-hidden="true" tabindex="-1"></a>     (<span class="kw">error</span> (<span class="kw">make-instance</span></span>
+<span id="cb34-4"><a href="#cb34-4" aria-hidden="true" tabindex="-1"></a>         &#39;http-assertion-error</span>
+<span id="cb34-5"><a href="#cb34-5" aria-hidden="true" tabindex="-1"></a>         :assertion &#39;room)))</span></code></pre></div>
+<p>This takes the <code>cdr</code> of looking up the symbol <code>:room</code> in the association list <code>parameters</code>. If that returns a non-nil value, <code>uri-decode</code> it, otherwise throw an error of the type <code>http-assertion-error</code>.</p>
+<p>In other words, the above is equivalent to:</p>
+<div class="sourceCode" id="cb35"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb35-1"><a href="#cb35-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">let</span> ((it (<span class="kw">cdr</span> (<span class="kw">assoc</span> :room parameters))))</span>
+<span id="cb35-2"><a href="#cb35-2" aria-hidden="true" tabindex="-1"></a>  (<span class="kw">if</span> it</span>
+<span id="cb35-3"><a href="#cb35-3" aria-hidden="true" tabindex="-1"></a>      (uri-decode it)</span>
+<span id="cb35-4"><a href="#cb35-4" aria-hidden="true" tabindex="-1"></a>      (<span class="kw">error</span> (<span class="kw">make-instance</span></span>
+<span id="cb35-5"><a href="#cb35-5" aria-hidden="true" tabindex="-1"></a>          &#39;http-assertion-error</span>
+<span id="cb35-6"><a href="#cb35-6" aria-hidden="true" tabindex="-1"></a>          :assertion &#39;room))))</span></code></pre></div>
+<p>Strongly-typed functional languages like Haskell often use a <code>Maybe</code> type in this situation. In Common Lisp, we capture the symbol <code>it</code> in the expansion as the name for the result of the check.</p>
+<p>Understanding this, we should be able to see that <code>arg-exp</code> is generating a specific, repetitive, piece of the code tree that we eventually want to evaluate. In this case, the piece that checks for the presence of the given parameter among the handlers’ <code>parameters</code>. Now, let’s move onto…</p>
+<h4 id="type-expression">type-expression</h4>
+<div class="sourceCode" id="cb36"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb36-1"><a href="#cb36-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defgeneric</span><span class="fu"> type-expression </span>(parameter <span class="kw">type</span>)</span>
+<span id="cb36-2"><a href="#cb36-2" aria-hidden="true" tabindex="-1"></a>  (:documentation</span>
+<span id="cb36-3"><a href="#cb36-3" aria-hidden="true" tabindex="-1"></a>   <span class="st">&quot;A type-expression will tell the server</span></span>
+<span id="cb36-4"><a href="#cb36-4" aria-hidden="true" tabindex="-1"></a><span class="st">how to convert a parameter from a string to</span></span>
+<span id="cb36-5"><a href="#cb36-5" aria-hidden="true" tabindex="-1"></a><span class="st">a particular, necessary type.&quot;</span>))</span>
+<span id="cb36-6"><a href="#cb36-6" aria-hidden="true" tabindex="-1"></a>...</span>
+<span id="cb36-7"><a href="#cb36-7" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> type-expression </span>(parameter <span class="kw">type</span>) <span class="kw">nil</span>)</span></code></pre></div>
+<p>This is a generic function that generates new tree structures (coincidentally Lisp code), rather than just a function. The only thing the above tells you is that by default, a <code>type-expression</code> is <code>NIL</code>. Which is to say, we don’t have one. If we encounter a <code>NIL</code>, we use the raw output of <code>arg-exp</code>, but that doesn’t tell us much about the most common case. To see that, let’s take a look at a built-in (to <code>:house</code>) <code>define-http-type</code> expression.</p>
+<div class="sourceCode" id="cb37"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb37-1"><a href="#cb37-1" aria-hidden="true" tabindex="-1"></a>(define-http-type (:integer)</span>
+<span id="cb37-2"><a href="#cb37-2" aria-hidden="true" tabindex="-1"></a>    :type-expression `(<span class="kw">parse-integer</span> ,parameter <span class="bu">:junk-allowed</span> <span class="kw">t</span>)</span>
+<span id="cb37-3"><a href="#cb37-3" aria-hidden="true" tabindex="-1"></a>    :type-assertion `(<span class="kw">numberp</span> ,parameter))</span></code></pre></div>
+<p>An <code>:integer</code> is something we’re making from a <code>parameter</code> by using <code>parse-integer</code>. The <code>junk-allowed</code> parameter tells <code>parse-integer</code> that we’re not confident the data we’re giving it is actually parseable, so we need to make sure that the returned result is an integer. If it isn’t, we get this behaviour:</p>
+<pre><code>HOUSE&gt; (type-expression &#39;blah :integer)
+(PARSE-INTEGER BLAH :JUNK-ALLOWED T)
+HOUSE&gt;</code></pre>
+<p><code>define-http-handler</code><a href="#fn10" class="footnote-ref" id="fnref10" role="doc-noteref"><sup>10</sup></a> is one of the exported symbols for our framework. This lets our application programmers define their own types to simplify parsing above the handful of “builtins” that we give them (<code>:string</code>, <code>:integer</code>, <code>:keyword</code>, <code>:json</code>, <code>:list-of-keyword</code> and <code>:list-of-integer</code>).</p>
+<div class="sourceCode" id="cb39"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb39-1"><a href="#cb39-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmacro</span><span class="fu"> define-http-type </span>((<span class="kw">type</span>) &amp;key type-expression type-assertion)</span>
+<span id="cb39-2"><a href="#cb39-2" aria-hidden="true" tabindex="-1"></a>  (with-gensyms (tp)</span>
+<span id="cb39-3"><a href="#cb39-3" aria-hidden="true" tabindex="-1"></a>    `(<span class="kw">let</span> ((,tp ,<span class="kw">type</span>))</span>
+<span id="cb39-4"><a href="#cb39-4" aria-hidden="true" tabindex="-1"></a>       ,@(<span class="kw">when</span> type-expression</span>
+<span id="cb39-5"><a href="#cb39-5" aria-hidden="true" tabindex="-1"></a>      `((<span class="kw">defmethod</span><span class="fu"> type-expression </span>(parameter (<span class="kw">type</span> (<span class="kw">eql</span> ,tp)))</span>
+<span id="cb39-6"><a href="#cb39-6" aria-hidden="true" tabindex="-1"></a>          ,type-expression)))</span>
+<span id="cb39-7"><a href="#cb39-7" aria-hidden="true" tabindex="-1"></a>       ,@(<span class="kw">when</span> type-assertion</span>
+<span id="cb39-8"><a href="#cb39-8" aria-hidden="true" tabindex="-1"></a>      `((<span class="kw">defmethod</span><span class="fu"> type-assertion </span>(parameter (<span class="kw">type</span> (<span class="kw">eql</span> ,tp)))</span>
+<span id="cb39-9"><a href="#cb39-9" aria-hidden="true" tabindex="-1"></a>          ,type-assertion))))))</span></code></pre></div>
+<p>It works by creating <code>type-expression</code> and <code>type-assertion</code> method definitions for the type being defined. We could let users of our framework do this manually without much trouble; however, adding this extra level of indirection gives us, the framework programmers, the freedom to change <em>how</em> types are implemented without forcing our users to re-write their specifications. This isn’t just an academic consideration; I’ve personally made radical changes to this part of the system when first building it, and was pleased to find that I had to make very few edits to the applications that depended on it.</p>
+<p>Let’s take a look at the expansion of that integer definition to see how it works in detail:</p>
+<div class="sourceCode" id="cb40"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb40-1"><a href="#cb40-1" aria-hidden="true" tabindex="-1"></a>(LET ((#:TP1288 :INTEGER))</span>
+<span id="cb40-2"><a href="#cb40-2" aria-hidden="true" tabindex="-1"></a>  (DEFMETHOD TYPE-EXPRESSION (PARAMETER (TYPE (EQL #:TP1288)))</span>
+<span id="cb40-3"><a href="#cb40-3" aria-hidden="true" tabindex="-1"></a>    `(PARSE-INTEGER ,PARAMETER :JUNK-ALLOWED T))</span>
+<span id="cb40-4"><a href="#cb40-4" aria-hidden="true" tabindex="-1"></a>  (DEFMETHOD TYPE-ASSERTION (PARAMETER (TYPE (EQL #:TP1288)))</span>
+<span id="cb40-5"><a href="#cb40-5" aria-hidden="true" tabindex="-1"></a>    `(NUMBERP ,PARAMETER)))</span></code></pre></div>
+<p>As we said, it doesn’t reduce code size by much, but it does prevent us from needing to care what the specific parameters of those methods are, or even that they’re methods at all.</p>
+<h4 id="type-assertion">type-assertion</h4>
+<p>Now that we can define types, let’s look at how we use <code>type-assertion</code> to validate that a parse satisfies our requirements. It, too, takes the form of a complementary <code>defgeneric</code>/<code>defmethod</code> pair just like <code>type-expression</code>:</p>
+<div class="sourceCode" id="cb41"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb41-1"><a href="#cb41-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defgeneric</span><span class="fu"> type-assertion </span>(parameter <span class="kw">type</span>)</span>
+<span id="cb41-2"><a href="#cb41-2" aria-hidden="true" tabindex="-1"></a>  (:documentation</span>
+<span id="cb41-3"><a href="#cb41-3" aria-hidden="true" tabindex="-1"></a>   <span class="st">&quot;A lookup assertion is run on a parameter</span></span>
+<span id="cb41-4"><a href="#cb41-4" aria-hidden="true" tabindex="-1"></a><span class="st">immediately after conversion. Use it to restrict</span></span>
+<span id="cb41-5"><a href="#cb41-5" aria-hidden="true" tabindex="-1"></a><span class="st"> the space of a particular parameter.&quot;</span>))</span>
+<span id="cb41-6"><a href="#cb41-6" aria-hidden="true" tabindex="-1"></a>...</span>
+<span id="cb41-7"><a href="#cb41-7" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defmethod</span><span class="fu"> type-assertion </span>(parameter <span class="kw">type</span>) <span class="kw">nil</span>)</span></code></pre></div>
+<p>Here’s what this one outputs:</p>
+<div class="sourceCode" id="cb42"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb42-1"><a href="#cb42-1" aria-hidden="true" tabindex="-1"></a>HOUSE&gt; (type-assertion &#39;blah :integer)</span>
+<span id="cb42-2"><a href="#cb42-2" aria-hidden="true" tabindex="-1"></a>(NUMBERP BLAH)</span>
+<span id="cb42-3"><a href="#cb42-3" aria-hidden="true" tabindex="-1"></a>HOUSE&gt;</span></code></pre></div>
+<p>There are cases where <code>type-assertion</code> won’t need to do anything. For example, since HTTP parameters are given to us as strings, our <code>:string</code> type assertion has nothing to validate:</p>
+<div class="sourceCode" id="cb43"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb43-1"><a href="#cb43-1" aria-hidden="true" tabindex="-1"></a>HOUSE&gt; (type-assertion &#39;blah :string)</span>
+<span id="cb43-2"><a href="#cb43-2" aria-hidden="true" tabindex="-1"></a>NIL</span>
+<span id="cb43-3"><a href="#cb43-3" aria-hidden="true" tabindex="-1"></a>HOUSE&gt;</span></code></pre></div>
+<h3 id="all-together-now">All Together Now</h3>
+<p>We did it! We built a web framework on top of an event-driven webserver implementation. Our framework (and handler DSL) defines new applications by:</p>
+<ul>
+<li>Mapping URLs to handlers;</li>
+<li>Defining handlers to enforce the type safety and validation rules on requests;</li>
+<li>Optionally specifying new types for handlers as required.</li>
+</ul>
+<p>Now we can describe our application like this:</p>
+<div class="sourceCode" id="cb44"><pre class="sourceCode lisp"><code class="sourceCode commonlisp"><span id="cb44-1"><a href="#cb44-1" aria-hidden="true" tabindex="-1"></a>(<span class="kw">defun</span><span class="fu"> len-between </span>(<span class="kw">min</span> thing <span class="kw">max</span>)</span>
+<span id="cb44-2"><a href="#cb44-2" aria-hidden="true" tabindex="-1"></a>  (<span class="op">&gt;=</span> <span class="kw">max</span> (<span class="kw">length</span> thing) <span class="kw">min</span>))</span>
+<span id="cb44-3"><a href="#cb44-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb44-4"><a href="#cb44-4" aria-hidden="true" tabindex="-1"></a>(define-handler (source :is-stream? <span class="kw">nil</span>)</span>
+<span id="cb44-5"><a href="#cb44-5" aria-hidden="true" tabindex="-1"></a>    ((<span class="kw">room</span> :string (len-between <span class="dv">0</span> <span class="kw">room</span> <span class="dv">16</span>)))</span>
+<span id="cb44-6"><a href="#cb44-6" aria-hidden="true" tabindex="-1"></a>  (subscribe! (<span class="kw">intern</span> <span class="kw">room</span> :keyword) sock))</span>
+<span id="cb44-7"><a href="#cb44-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb44-8"><a href="#cb44-8" aria-hidden="true" tabindex="-1"></a>(define-handler (send-message)</span>
+<span id="cb44-9"><a href="#cb44-9" aria-hidden="true" tabindex="-1"></a>    ((<span class="kw">room</span> :string (len-between <span class="dv">0</span> <span class="kw">room</span> <span class="dv">16</span>))</span>
+<span id="cb44-10"><a href="#cb44-10" aria-hidden="true" tabindex="-1"></a>     (name :string (len-between <span class="dv">1</span> name <span class="dv">64</span>))</span>
+<span id="cb44-11"><a href="#cb44-11" aria-hidden="true" tabindex="-1"></a>     (message :string (len-between <span class="dv">5</span> message <span class="dv">256</span>)))</span>
+<span id="cb44-12"><a href="#cb44-12" aria-hidden="true" tabindex="-1"></a>  (publish! (<span class="kw">intern</span> <span class="kw">room</span> :keyword)</span>
+<span id="cb44-13"><a href="#cb44-13" aria-hidden="true" tabindex="-1"></a>        (encode-json-to-string</span>
+<span id="cb44-14"><a href="#cb44-14" aria-hidden="true" tabindex="-1"></a>         `((<span class="bu">:name</span> . ,name) (:message . ,message)))))</span>
+<span id="cb44-15"><a href="#cb44-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb44-16"><a href="#cb44-16" aria-hidden="true" tabindex="-1"></a>(define-handler (index) ()</span>
+<span id="cb44-17"><a href="#cb44-17" aria-hidden="true" tabindex="-1"></a>  (with-html-output-to-string (s <span class="kw">nil</span> :prologue <span class="kw">t</span> :indent <span class="kw">t</span>)</span>
+<span id="cb44-18"><a href="#cb44-18" aria-hidden="true" tabindex="-1"></a>    (:html</span>
+<span id="cb44-19"><a href="#cb44-19" aria-hidden="true" tabindex="-1"></a>     (:head (:script</span>
+<span id="cb44-20"><a href="#cb44-20" aria-hidden="true" tabindex="-1"></a>         <span class="bu">:type</span> <span class="st">&quot;text/javascript&quot;</span></span>
+<span id="cb44-21"><a href="#cb44-21" aria-hidden="true" tabindex="-1"></a>         :src <span class="st">&quot;/static/js/interface.js&quot;</span>))</span>
+<span id="cb44-22"><a href="#cb44-22" aria-hidden="true" tabindex="-1"></a>     (:body (:div :id <span class="st">&quot;messages&quot;</span>)</span>
+<span id="cb44-23"><a href="#cb44-23" aria-hidden="true" tabindex="-1"></a>        (:textarea :id <span class="st">&quot;input&quot;</span>)</span>
+<span id="cb44-24"><a href="#cb44-24" aria-hidden="true" tabindex="-1"></a>        (:button :id <span class="st">&quot;send&quot;</span> <span class="st">&quot;Send&quot;</span>)))))</span>
+<span id="cb44-25"><a href="#cb44-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb44-26"><a href="#cb44-26" aria-hidden="true" tabindex="-1"></a>(start <span class="dv">4242</span>)</span></code></pre></div>
+<p>Once we write <code>interface.js</code> to provide the client-side interactivity, this will start an HTTP chat server on port <code>4242</code> and listen for incoming connections.</p>
+<section class="footnotes" role="doc-endnotes">
+<hr />
+<ol>
+<li id="fn1" role="doc-endnote"><p>One solution to this problem is to force the clients to <em>poll</em> the server. That is, each client would periodically send the server a request asking if anything has changed. This can work for simple applications, but in this chapter we’re going to focus on the solutions available to you when this model stops working.<a href="#fnref1" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn2" role="doc-endnote"><p>We could consider a more general system that handles <span class="math inline">\(N\)</span> concurrent users with <span class="math inline">\(M\)</span> threads for some configurable value of <span class="math inline">\(M\)</span>; in this model, the <span class="math inline">\(N\)</span> connections are said to be <em>multiplexed</em> across the <span class="math inline">\(M\)</span> threads. In this chapter, we are going to focus on writing a program where <span class="math inline">\(M\)</span> is fixed at 1; however, the lessons learned here should be partially applicable to the more general model.<a href="#fnref2" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn3" role="doc-endnote"><p>This nomenclature is a bit confusing, and has its origin in early operating-systems research. It refers to how communication is done between multiple concurrent processes. In a thread-based system, communication is done through a synchronized resource such as shared memory. In an event-based system, processes generally communicate through a queue where they post items that describe what they have done or what they want done, which is maintained by our single thread of execution. Since these items generally describe desired or past actions, they are referred to as ‘events’.<a href="#fnref3" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn4" role="doc-endnote"><p>See  for another take on this problem.<a href="#fnref4" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn5" role="doc-endnote"><p>Pronounced “kloss”, “see-loss” or “see-lows”, depending on who you talk to.<a href="#fnref5" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn6" role="doc-endnote"><p>The Julia programming language takes a similar approach to object-oriented programming; you can learn more about it in .<a href="#fnref6" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn7" role="doc-endnote"><p>We’re incidentally introducing some new syntax here. This is our way of declaring a mutable variable. It has the form <code>(defparameter &lt;name&gt; &lt;value&gt; &lt;optional docstring&gt;)</code>.<a href="#fnref7" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn8" role="doc-endnote"><p><code>with-timeout</code> has different implementations on different Lisps. In some environments, it may create another thread or process to monitor the one that invoked it. While we’d only be creating at most one of these at a time, it is a relatively heavyweight operation to be performing per-write. We might want to consider an alternative approach in those environments.<a href="#fnref8" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn9" role="doc-endnote"><p>I should note, the below code-block is VERY unconventional indentation for Common Lisp. Arglists are typically not broken up over multiple lines, and are usually kept on the same line as the macro/function name. I had to do it to stick to the line-width guidelines for this book, but would otherwise prefer to have longer lines that break naturally at places dictated by the content of the code.<a href="#fnref9" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn10" role="doc-endnote"><p>This macro is difficult to read because it tries hard to make its output human-readable, by expanding <code>NIL</code>s away using <code>,@</code> where possible.<a href="#fnref10" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+</ol>
+</section>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

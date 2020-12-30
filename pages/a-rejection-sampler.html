@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="provenance" content="$Id: index.html 1472 2012-09-21 22:17:41Z audrey $" />
+    <link rel="stylesheet" href="/theme/css/bootstrap.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/bootstrap-responsive.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/code.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/500L.css" type="text/css" />
+    <title>500 Lines or Less | A Rejection Sampler</title>
+    <script type="text/x-mathjax-config">
+        MathJax.Hub.Config({
+          tex2jax: {
+            inlineMath: [['$','$'], ['\\(','\\)']],
+            displayMath: [ ['$$','$$'], ["\\[","\\]"] ],
+          },
+        });
+    </script>
+    <script type="text/javascript" src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+    </script>
+</head>
+  <body>
+    <div class="container">
+      <div class="row">
+        <div class="hero-unit">
+	  <a class='pull-right' href='/en/index.html'></a>
+          <h1>A Rejection Sampler</h1>
+          <h2 class="author">Jessica B. Hamrick</h2>
+          <blockquote class="pull-right">
+            </blockquote>
+
+        </div>
+      </div>
+      <div class="row">
+        <div class='span10 offset1' id='content'>
+          <p><em>Jess is a Ph.D. student at UC Berkeley where she studies human cognition by combining probabilistic models from machine learning with behavioral experiments from cognitive science. In her spare time, Jess is a core contributor to IPython and Jupyter. She also holds a B.S. and M.Eng. in Computer Science from MIT.</em></p>
+<h2 id="introduction">Introduction</h2>
+<p>Frequently, in computer science and engineering, we run into problems that can’t be solved using an equation. These problems usually involve complex systems, noisy inputs, or both. Here are just a few examples of real-world problems that do not have exact, analytic solutions:</p>
+<ol type="1">
+<li><p>You have built a computer model of an airplane, and want to determine how well the airplane will hold up under different weather conditions.</p></li>
+<li><p>You want to determine whether chemical runoff from a proposed factory will affect the water supply of nearby residents, based on a model of groundwater diffusion.</p></li>
+<li><p>You have a robot which captures noisy images from its camera, and want to recover the three-dimensional structure of the object that those images depict.</p></li>
+<li><p>You want to compute how likely you are to win at chess if you take a particular move.</p></li>
+</ol>
+<p>Even though these types of problems cannot be solved exactly, we can often achieve an approximate solution to them using techniques known as <em>Monte Carlo sampling</em> methods. In Monte Carlo methods, the key idea is to take many <em>samples</em>, which will then allow you to estimate the solution.<a href="#fn1" class="footnote-ref" id="fnref1" role="doc-noteref"><sup>1</sup></a></p>
+<h3 id="what-is-sampling">What is Sampling?</h3>
+<p>The term <em>sampling</em> means generating random values from some probability distribution. For example, the value you get from rolling a six-sided die is a sample. The card you draw from the top of the deck after it has been shuffled is a sample. The location where the dart hits the board is also a sample. The only difference between these various samples is that they are generated from different <em>probability distributions</em>. In the case of the die, the distribution places equal weight across six values. In the case of the card, the distribution places equal weight across 52 values. In the case of the dart board, the distribution places weight across a circular area (though it might not be uniformly distributed, depending on your skill as a dart player).</p>
+<p>There are two ways we usually want to use samples. The first is just to generate a random value to be used later: for example, randomly drawing cards in a computer game of poker. The second way that samples are used is for estimation. For example, if you suspected that your friend was playing with loaded dice, you might want to roll the dice many times to see if some numbers came up more often than you would expect. Or, you might just want to characterize the range of possibilities, as in the airplane example above. Weather is a fairly chaotic system, meaning that it is impossible to compute <em>exactly</em> whether the airplane will survive a particular weather situation. Instead, you could simulate the behavior of the airplane under many different weather conditions, multiple times, which would allow you to see under which conditions the airplane is most likely to fail.</p>
+<h3 id="programming-with-samples-and-probabilities">Programming with Samples and Probabilities</h3>
+<p>As with most applications in computer science, you can make design decisions when programming with samples and probabilities that will influence the overall cleanliness, coherence, and correctness of your code. In this chapter, we will go through a simple example of how to sample random items in a computer game. In particular, we will focus on the design decisions which are specific to working with probabilities, including functions both for sampling and for evaluating probabilities, working with logarithms, allowing reproducibility, and separating the process of generating samples from the specific application.</p>
+<h4 id="a-brief-aside-about-notation">A Brief Aside About Notation</h4>
+<p>We will use mathematical notation like <span class="math inline">\(p(x)\)</span> to indicate that <span class="math inline">\(p\)</span> is the <em>probability density function</em> (PDF) or <em>probability mass function</em> (PMF) over values <span class="math inline">\(x\)</span> of a random variable. A PDF is a <em>continuous</em> function <span class="math inline">\(p(x)\)</span> such that <span class="math inline">\(\int_{-\infty}^\infty p(x)\ \mathrm{d}x=1\)</span>, whereas a PMF is a <em>discrete</em> function <span class="math inline">\(p(x)\)</span> such that <span class="math inline">\(\sum_{x\in \mathbb{Z}} p(x)=1\)</span>, where <span class="math inline">\(\mathbb{Z}\)</span> is the set of all integers.</p>
+<p>The probability distribution in the case of the dart board would be a continuous PDF, while the probability distribution in the case of a die would be a discrete PMF. In both cases, <span class="math inline">\(p(x) \geq 0\)</span> for all <span class="math inline">\(x\)</span>; i.e., the probabilities have to be non-negative.</p>
+<p>There are two things that we might want to do with a probability distribution. Given a value (or location) <span class="math inline">\(x\)</span>, we might want to <em>evaluate</em> what the probability density (or mass) is at that location. In mathematical notation, we would write this as <span class="math inline">\(p(x)\)</span> (the probability density at the value <span class="math inline">\(x\)</span>).</p>
+<p>Given the PDF or PMF, we might also want to <em>sample</em> a value <span class="math inline">\(x\)</span> in a manner proportional to the distribution (such that we are more likely to get a sample at places where the probability is higher). In mathematical notation, we write this as <span class="math inline">\(x\sim p\)</span>, to indicate that <span class="math inline">\(x\)</span> is sampled proportional to <span class="math inline">\(p\)</span>.</p>
+<h2 id="sampling-magical-items">Sampling Magical Items</h2>
+<p>As a simple example to demonstrate the various design decisions involved with programming with probabilities, let’s imagine we’re writing a roleplaying game (RPG). We would like a method of generating bonus stats for the magical items that are randomly dropped by monsters. We might decide that the maximum bonus we want an item to confer is +5, and that higher bonuses are less likely than lower bonuses. If <span class="math inline">\(B\)</span> is a random variable over the values of the bonus, then:</p>
+<p><span class="math display">\[
+p(B=\mathrm{+1}) = 0.55\\
+p(B=\mathrm{+2}) = 0.25\\
+p(B=\mathrm{+3}) = 0.12\\
+p(B=\mathrm{+4}) = 0.06\\
+p(B=\mathrm{+5}) = 0.02
+\]</span></p>
+<p>We can also specify that there are six stats (dexterity, constitution, strength, intelligence, wisdom, and charisma) that our bonus should be distributed between. So, an item with a +5 bonus could have those points distributed across different stats (e.g., +2 wisdom and +3 intelligence) or concentrated within a single stat (e.g., +5 charisma).</p>
+<p>How would we randomly sample from this distribution? The easiest way is probably to first sample the overall item bonus, then sample the way the bonus is distributed across the stats. Conveniently, the probability distributions of the bonus and the way that it is distributed are both instances of the <em>multinomial distribution</em>.</p>
+<h2 id="the-multinomial-distribution">The Multinomial Distribution</h2>
+<p>The multinomial distribution is used when you have several possible outcomes, and you want to characterize the probability of each of those outcomes occurring. The classic example used to explain the multinomial distribution is the <em>ball and urn</em>. The idea is that you have an urn with different colored balls in it (for example, 30% red, 20% blue, and 50% green). You pull out a ball, record its color, put it back in the urn, and then repeat this multiple times. In this case, an <em>outcome</em> corresponds to drawing a ball of a particular color, and the probability of each outcome corresponds to the proportion of balls of that color (e.g., for the outcome of drawing a blue ball, the probability is <span class="math inline">\(p(\mathrm{blue})=0.20\)</span>). The multinomial distribution is then used to describe the possible combinations of outcomes when multiple balls are drawn (e.g., two green and one blue).</p>
+<p>The code in this section is located in the file <code>multinomial.py</code>.</p>
+<h3 id="the-multinomialdistribution-class">The <code>MultinomialDistribution</code> Class</h3>
+<p>In general, there are two use cases for a distribution: we might want to <em>sample</em> from that distribution, and we might want to <em>evaluate the probability</em> of a sample (or samples) under that distribution’s PMF or PDF. While the actual computations needed to perform these two functions are fairly different, they rely on a common piece of information: what the <em>parameters</em> of the distribution are. In the case of the multinomial distribution, the parameters are the event probabilities, <span class="math inline">\(p\)</span> (which correspond to the proportions of the different colored balls in the urn example above).</p>
+<p>The simplest solution would be to simply create two functions that both take the same parameters, but are otherwise independent. However, I will usually opt to use a class for representing my distributions. There are several advantages to doing so:</p>
+<ol type="1">
+<li>You only need to pass in the parameters once, when creating the class.</li>
+<li>There are additional attributes we might want to know about a distribution: the mean, variance, derivative, etc. Once we have even a handful of functions that operate on a common object, it is even more convenient to use a class rather than passing the same parameters to many different functions.</li>
+<li>It is usually a good idea to check that the parameter values are valid (for example, in the case of the multinomial distribution, the vector <span class="math inline">\(p\)</span> of event probabilities should sum to 1). It is much more efficient to do this check once, in the constructor of the class, rather than every time one of the functions is called.</li>
+<li>Sometimes computing the PMF or PDF involves computing constant values (given the parameters). With a class, we can pre-compute these constants in the constructor, rather than having to compute them every time the PMF or PDF function is called.</li>
+</ol>
+<p>In practice, this is how many statistics packages work, including SciPy’s own distributions, which are located in the <code>scipy.stats</code> module. While we are using other SciPy functions, however, we are not using their probability distributions, both for the sake of illustration, and because there is currently no multinomial distribution in SciPy.</p>
+<p>Here is the constructor code for the class:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> numpy <span class="im">as</span> np</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> MultinomialDistribution(<span class="bu">object</span>):</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, p, rso<span class="op">=</span>np.random):</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot;Initialize the multinomial random variable.</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="co">        Parameters</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="co">        ----------</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="co">        p: numpy array of length `k`</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="co">            The event probabilities</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a><span class="co">        rso: numpy RandomState object (default: None)</span></span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a><span class="co">            The random number generator</span></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a><span class="co">        &quot;&quot;&quot;</span></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Check that the probabilities sum to 1. If they don&#39;t, then</span></span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a>        <span class="co"># something is wrong! We use `np.isclose` rather than checking</span></span>
+<span id="cb1-19"><a href="#cb1-19" aria-hidden="true" tabindex="-1"></a>        <span class="co"># for exact equality because in many cases, we won&#39;t have</span></span>
+<span id="cb1-20"><a href="#cb1-20" aria-hidden="true" tabindex="-1"></a>        <span class="co"># exact equality due to floating-point error.</span></span>
+<span id="cb1-21"><a href="#cb1-21" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">not</span> np.isclose(np.<span class="bu">sum</span>(p), <span class="fl">1.0</span>):</span>
+<span id="cb1-22"><a href="#cb1-22" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span> <span class="pp">ValueError</span>(<span class="st">&quot;event probabilities do not sum to 1&quot;</span>)</span>
+<span id="cb1-23"><a href="#cb1-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-24"><a href="#cb1-24" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Store the parameters that were passed in</span></span>
+<span id="cb1-25"><a href="#cb1-25" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.p <span class="op">=</span> p</span>
+<span id="cb1-26"><a href="#cb1-26" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.rso <span class="op">=</span> rso</span>
+<span id="cb1-27"><a href="#cb1-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-28"><a href="#cb1-28" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Precompute log probabilities, for use by the log-PMF, for</span></span>
+<span id="cb1-29"><a href="#cb1-29" aria-hidden="true" tabindex="-1"></a>        <span class="co"># each element of `self.p` (the function `np.log` operates</span></span>
+<span id="cb1-30"><a href="#cb1-30" aria-hidden="true" tabindex="-1"></a>        <span class="co"># elementwise over NumPy arrays, as well as on scalars.)</span></span>
+<span id="cb1-31"><a href="#cb1-31" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.logp <span class="op">=</span> np.log(<span class="va">self</span>.p)</span></code></pre></div>
+<p>The class takes as arguments the event probabilities, <span class="math inline">\(p\)</span>, and a variable called <code>rso</code>. First, the constructor checks that the parameters are valid; i.e., that <code>p</code> sums to 1. Then it stores the arguments that were passed in, and uses the event probabilities to compute the event <em>log</em> probabilities. (We’ll go into why this is necessary in a bit). The <code>rso</code> object is what we’ll use later to produce random numbers. (We’ll talk more about what it is a bit later as well).</p>
+<p>Before we get into the rest of the class, let’s go over two points related to the constructor.</p>
+<h4 id="descriptive-versus-mathematic-variable-names">Descriptive versus Mathematic Variable Names</h4>
+<p>Usually, programmers are encouraged to use descriptive variable names: for example, it would be considered better practice to use the names <code>independent_variable</code> and <code>dependent_variable</code> rather than <code>x</code> and <code>y</code>. A standard rule of thumb is to never use variable names that are only one or two characters. However, you’ll notice that in the constructor to our <code>MultinomialDistribution</code> class, we use the variable name of <code>p</code>, which is in violation of typical naming conventions.</p>
+<p>While I agree that such naming conventions should apply in almost every domain, there is one exception: math. The difficulty with coding up mathematical equations is that those equations usually have variable names which are just a single letter: <span class="math inline">\(x\)</span>, <span class="math inline">\(y\)</span>, <span class="math inline">\(\alpha\)</span>, etc. So, if you were translating them directly into code, the easiest variable names would be <code>x</code>, <code>y</code>, and <code>alpha</code>. Obviously, these are not the most informative variable names (the name <code>x</code> does not convey much information), but having more descriptive variable names can also make it harder to switch between the the code and the equation.</p>
+<p>I think that when you are writing code that directly implements an equation, the same variable names should be used as those in the equation. This makes it easy to see which parts of the code are implementing which pieces of the equation. This, of course, can make the code harder to understand in isolation, so it is especially important that the comments then do a good job of explaining what the goal of the various computations are. If the equation is listed in an academic paper, the comments should reference the equation number so it can be easily looked up.</p>
+<h4 id="importing-numpy">Importing NumPy</h4>
+<p>You may have noticed that we imported the <code>numpy</code> module as <code>np</code>. This is standard practice in the world of numerical computing, because NumPy provides a huge number of useful functions, many of which might be used even in a single file. In the simple examples from this chapter, we only use eleven NumPy functions, but the number can be much higher: it is not uncommon for me to use around forty different NumPy functions throughout a project!</p>
+<p>There are a few options for importing NumPy. We could use <code>from numpy import *</code>, but that is generally poor style, because it makes it hard to determine where the functions came from. We could import the functions individually with <code>from numpy import array, log, ...</code>, but that gets clumsy fairly quickly. We could just use <code>import numpy</code>, but this often results in code being much more difficult to read. Both of the following examples are hard to read, but the one using <code>np</code> rather than <code>numpy</code> is significantly clearer:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> numpy.sqrt(numpy.<span class="bu">sum</span>(numpy.dot(numpy.array(a), numpy.array(b))))</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> np.sqrt(np.<span class="bu">sum</span>(np.dot(np.array(a), np.array(b))))</span></code></pre></div>
+<h3 id="sampling-from-a-multinomial-distribution">Sampling from a Multinomial Distribution</h3>
+<p>Taking a sample from a multinomial distribution is actually fairly straightforward, because NumPy provides us with a function that does it: <code>np.random.multinomial</code><a href="#fn2" class="footnote-ref" id="fnref2" role="doc-noteref"><sup>2</sup></a>.</p>
+<p>Despite the fact that this function already exists, there are a few design decisions surrounding it that we can make.</p>
+<h4 id="seeding-the-random-number-generator">Seeding the Random Number Generator</h4>
+<p>Even though we do want to draw a <em>random</em> sample, we sometimes want our results to be reproducible: even though the numbers seem random, if we were to run the program again, we might want it to use the <em>same</em> sequence of “random” numbers.</p>
+<p>In order to allow for the generation of such “reproducibly random” numbers, we need to tell our sampling function <em>how</em> to generate the random numbers. We can accomplish this through use of a NumPy <code>RandomState</code> object, which is essentially a random number generator object that can be passed around. It has most of the same functions as <code>np.random</code>; the difference is that we get to control where the random numbers come from. We create it as follows:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="im">import</span> numpy <span class="im">as</span> np</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> rso <span class="op">=</span> np.random.RandomState(<span class="dv">230489</span>)</span></code></pre></div>
+<p>where the number passed to the <code>RandomState</code> constructor is the <em>seed</em> for the random number generator. As long as we instantiate it with the same seed, a <code>RandomState</code> object will produce the same “random” numbers in the same order, thus ensuring replicability:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> rso.rand()</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="fl">0.5356709186237074</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> rso.rand()</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="fl">0.6190581888276206</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> rso.rand()</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="fl">0.23143573416770336</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> rso.seed(<span class="dv">230489</span>)</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> rso.rand()</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="fl">0.5356709186237074</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> rso.rand()</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="fl">0.6190581888276206</span></span></code></pre></div>
+<p>Earlier, we saw that the constructor took an argument called <code>rso</code>. This <code>rso</code> variable is a <code>RandomState</code> object that has already been initialized. I like to make the <code>RandomState</code> object an optional parameter: it is occasionally convenient to not be <em>forced</em> to use it, but I do want to have the <em>option</em> of using it (which, if I were to just use the <code>np.random</code> module, I would not be able to do).</p>
+<p>So, if the <code>rso</code> variable is not given, then the constructor defaults to <code>np.random.multinomial</code>. Otherwise, it uses the multinomial sampler from the <code>RandomState</code> object itself<a href="#fn3" class="footnote-ref" id="fnref3" role="doc-noteref"><sup>3</sup></a>.</p>
+<h4 id="whats-a-parameter">What’s a Parameter?</h4>
+<p>Once we’ve decided whether to use <code>np.random.multinomial</code> or <code>rso.multinomial</code>, sampling is just a matter of calling the appropriate function. However, there is one other decision that we might consider: What counts as a parameter?</p>
+<p>Earlier, I said that the outcome probabilities, <span class="math inline">\(p\)</span>, were the parameters of the multinomial distribution. However, depending on who you ask, the number of events, <span class="math inline">\(n\)</span>, can <em>also</em> be a parameter of the multinomial distribution. So, why didn’t we include <span class="math inline">\(n\)</span> as an argument to the constructor?</p>
+<p>This question, while relatively specific to the multinomial distribution, actually comes up fairly frequently when dealing with probability distributions, and the answer really depends on the use case. For a multinomial, can you make the assumption that the number of events is always the same? If so, then it might be better to pass in <span class="math inline">\(n\)</span> as an argument to the constructor. If not, then requiring <span class="math inline">\(n\)</span> to be specified at object creation time could be very restrictive, and might even require you to create a new distribution object every time you need to draw a sample!</p>
+<p>I usually don’t like to be that restricted by my code, and thus choose to have <code>n</code> be an argument to the <code>sample</code> function, rather than having it be an argument to the constructor. An alternate solution could be to have <code>n</code> be an argument to the constructor, but also include methods to allow for the value of <code>n</code> to be changed, without having to create an entirely new object. For our purposes, though, this solution is probably overkill, so we’ll stick to just having it be an argument to <code>sample</code>:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> sample(<span class="va">self</span>, n):</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Samples draws of `n` events from a multinomial distribution with</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="co">    outcome probabilities `self.p`.</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a><span class="co">    Parameters</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a><span class="co">    ----------</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a><span class="co">    n: integer</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a><span class="co">        The number of total events</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a><span class="co">    Returns</span></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a><span class="co">    -------</span></span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a><span class="co">    numpy array of length `k`</span></span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a><span class="co">        The sampled number of occurrences for each outcome</span></span>
+<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-15"><a href="#cb5-15" aria-hidden="true" tabindex="-1"></a><span class="co">    &quot;&quot;&quot;</span></span>
+<span id="cb5-16"><a href="#cb5-16" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> <span class="va">self</span>.rso.multinomial(n, <span class="va">self</span>.p)</span>
+<span id="cb5-17"><a href="#cb5-17" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x</span></code></pre></div>
+<h3 id="evaluating-the-multinomial-pmf">Evaluating the Multinomial PMF</h3>
+<p>Although we don’t explicitly need to compute the probability of the magical items that we generate, it is almost always a good idea to write a function that can compute the distribution’s probability mass function (PMF) or probability density function (PDF). Why?</p>
+<p>One reason is that we can use it for testing: if we take many samples with our sampling function, then they should approximate the exact PDF or PMF. If after many samples the approximation is poor or obviously wrong, then we know there is a bug in our code somewhere.</p>
+<p>Another reason to implement the PMF or PDF is that frequently, you will actually need it later down the line and simply don’t realize it initially. For example, we might want to classify our randomly generated items as <em>common</em>, <em>uncommon</em>, and <em>rare</em>, depending on how likely they are to be generated. To determine this, we need to be able to compute the PMF.</p>
+<p>Finally, in many cases, your particular use case will dictate that you implement the PMF or PDF from the beginning, anyway.</p>
+<h4 id="the-multinomial-pmf-equation">The Multinomial PMF Equation</h4>
+<p>Formally, the multinomial distribution has the following equation:</p>
+<p><span class="math display">\[
+p(\mathbf{x}; \mathbf{p}) = \frac{(\sum_{i=1}^k x_i)!}{x_1!\cdots{}x_k!}p_1^{x_1}\cdots{}p_k^{x_k}
+\]</span></p>
+<p>where <span class="math inline">\(\mathbf{x}=[x_1, \ldots{}, x_k]\)</span> is a vector of length <span class="math inline">\(k\)</span> specifying the number of times each event happened, and <span class="math inline">\(\mathbf{p}=[p_1, \ldots{}, p_k]\)</span> is a vector specifying the probability of each event occurring. As mentioned above, the event probabilities <span class="math inline">\(\mathbf{p}\)</span> are the <em>parameters</em> of the distribution.</p>
+<p>The factorials in the equation above can actually be expressed using a special function, <span class="math inline">\(\Gamma\)</span>, called the <em>gamma function</em>. When we get to writing the code, it will be more convenient and efficient to use the gamma function rather than factorial, so we will rewrite the equation using <span class="math inline">\(\Gamma\)</span>:</p>
+<p><span class="math display">\[
+p(\mathbf{x}; \mathbf{p}) = \frac{\Gamma((\sum_{i=1}^k x_i)+1)}{\Gamma(x_1+1)\cdots{}\Gamma(x_k+1)}p_1^{x_1}\cdots{}p_k^{x_k}
+\]</span></p>
+<h4 id="working-with-log-values">Working with Log Values</h4>
+<p>Before getting into the actual code needed to implement the equation above, I want to emphasize one of the the most important design decisions when writing code with probabilities: working with log values. What this means is that rather than working directly with probabilities <span class="math inline">\(p(x)\)</span>, we should be working with <em>log</em>-probabilities, <span class="math inline">\(\log{p(x)}\)</span>. This is because probabilities can get very small very quickly, resulting in underflow errors.</p>
+<p>To motivate this, consider that probabilities must range between 0 and 1 (inclusive). NumPy has a useful function, <code>finfo</code>, that will tell us the limits of floating point values for our system. For example, on a 64-bit machine, we see that the smallest usable positive number (given by <code>tiny</code>) is:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="im">import</span> numpy <span class="im">as</span> np</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> np.finfo(<span class="bu">float</span>).tiny</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="fl">2.2250738585072014e-308</span></span></code></pre></div>
+<p>While that may seem very small, it is not unusual to encounter probabilities of this magnitude, or even smaller. Moreover, it is a common operation to multiply probabilities, yet if we try to do this with very small probabilities, we encounter underflow problems:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> tiny <span class="op">=</span> np.finfo(<span class="bu">float</span>).tiny</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="co"># if we multiply numbers that are too small, we lose all precision</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> tiny <span class="op">*</span> tiny</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="fl">0.0</span></span></code></pre></div>
+<p>However, taking the log can help alleviate this issue because we can represent a much wider range of numbers with logarithms than we can normally. Officially, log values range from <span class="math inline">\(-\infty\)</span> to zero. In practice, they range from the <code>min</code> value returned by <code>finfo</code>, which is the smallest number that can be represented, to zero. The <code>min</code> value is <em>much</em> smaller than the log of the <code>tiny</code> value (which would be our lower bound if we did not work in log space):</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="co"># this is our lower bound normally</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> np.log(tiny)</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a><span class="op">-</span><span class="fl">708.39641853226408</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="co"># this is our lower bound when using logs</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> np.finfo(<span class="bu">float</span>).<span class="bu">min</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a><span class="op">-</span><span class="fl">1.7976931348623157e+308</span></span></code></pre></div>
+<p>So, by working with log values, we can greatly expand our range of representable numbers. Moreover, we can perform multiplication with logs by using addition, because <span class="math inline">\(\log(x\cdot{}y) = \log(x) + \log(y)\)</span>. Thus, if we do the multiplication above with logs, we do not have to worry (as much) about loss of precision due to underflow:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="co"># the result of multiplying small probabilities</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> np.log(tiny <span class="op">*</span> tiny)</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="op">-</span>inf</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="co"># the result of adding small log probabilities</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> np.log(tiny) <span class="op">+</span> np.log(tiny)</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a><span class="op">-</span><span class="fl">1416.7928370645282</span></span></code></pre></div>
+<p>Of course, this solution is not a magic bullet. If we need to derive the number from the logarithm (for example, to add probabilities, rather than multiply them), then we are back to underflow:</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> tiny<span class="op">*</span>tiny</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="fl">0.0</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> np.exp(np.log(tiny) <span class="op">+</span> np.log(tiny))</span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a><span class="fl">0.0</span></span></code></pre></div>
+<p>Still, doing all our computations with logs can save a lot of headache. We might be forced to lose that precision if we need to go back to the original numbers, but we at least maintain <em>some</em> information about the probabilities—enough to compare them, for example—that would otherwise be lost.</p>
+<h4 id="writing-the-pmf-code">Writing the PMF Code</h4>
+<p>Now that we have seen the importance of working with logs, we can actually write our function to compute the log-PMF:</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> log_pmf(<span class="va">self</span>, x):</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Evaluates the log-probability mass function (log-PMF) of a</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="co">    multinomial with outcome probabilities `self.p` for a draw `x`.</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a><span class="co">    Parameters</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a><span class="co">    ----------</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a><span class="co">    x: numpy array of length `k`</span></span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a><span class="co">        The number of occurrences of each outcome</span></span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a><span class="co">    Returns</span></span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a><span class="co">    -------</span></span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a><span class="co">    The evaluated log-PMF for draw `x`</span></span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-14"><a href="#cb11-14" aria-hidden="true" tabindex="-1"></a><span class="co">    &quot;&quot;&quot;</span></span>
+<span id="cb11-15"><a href="#cb11-15" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Get the total number of events</span></span>
+<span id="cb11-16"><a href="#cb11-16" aria-hidden="true" tabindex="-1"></a>    n <span class="op">=</span> np.<span class="bu">sum</span>(x)</span>
+<span id="cb11-17"><a href="#cb11-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-18"><a href="#cb11-18" aria-hidden="true" tabindex="-1"></a>    <span class="co"># equivalent to log(n!)</span></span>
+<span id="cb11-19"><a href="#cb11-19" aria-hidden="true" tabindex="-1"></a>    log_n_factorial <span class="op">=</span> gammaln(n <span class="op">+</span> <span class="dv">1</span>)</span>
+<span id="cb11-20"><a href="#cb11-20" aria-hidden="true" tabindex="-1"></a>    <span class="co"># equivalent to log(x1! * ... * xk!)</span></span>
+<span id="cb11-21"><a href="#cb11-21" aria-hidden="true" tabindex="-1"></a>    sum_log_xi_factorial <span class="op">=</span> np.<span class="bu">sum</span>(gammaln(x <span class="op">+</span> <span class="dv">1</span>))</span>
+<span id="cb11-22"><a href="#cb11-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-23"><a href="#cb11-23" aria-hidden="true" tabindex="-1"></a>    <span class="co"># If one of the values of self.p is 0, then the corresponding</span></span>
+<span id="cb11-24"><a href="#cb11-24" aria-hidden="true" tabindex="-1"></a>    <span class="co"># value of self.logp will be -inf. If the corresponding value</span></span>
+<span id="cb11-25"><a href="#cb11-25" aria-hidden="true" tabindex="-1"></a>    <span class="co"># of x is 0, then multiplying them together will give nan, but</span></span>
+<span id="cb11-26"><a href="#cb11-26" aria-hidden="true" tabindex="-1"></a>    <span class="co"># we want it to just be 0.</span></span>
+<span id="cb11-27"><a href="#cb11-27" aria-hidden="true" tabindex="-1"></a>    log_pi_xi <span class="op">=</span> <span class="va">self</span>.logp <span class="op">*</span> x</span>
+<span id="cb11-28"><a href="#cb11-28" aria-hidden="true" tabindex="-1"></a>    log_pi_xi[x <span class="op">==</span> <span class="dv">0</span>] <span class="op">=</span> <span class="dv">0</span></span>
+<span id="cb11-29"><a href="#cb11-29" aria-hidden="true" tabindex="-1"></a>    <span class="co"># equivalent to log(p1^x1 * ... * pk^xk)</span></span>
+<span id="cb11-30"><a href="#cb11-30" aria-hidden="true" tabindex="-1"></a>    sum_log_pi_xi <span class="op">=</span> np.<span class="bu">sum</span>(log_pi_xi)</span>
+<span id="cb11-31"><a href="#cb11-31" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-32"><a href="#cb11-32" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Put it all together</span></span>
+<span id="cb11-33"><a href="#cb11-33" aria-hidden="true" tabindex="-1"></a>    log_pmf <span class="op">=</span> log_n_factorial <span class="op">-</span> sum_log_xi_factorial <span class="op">+</span> sum_log_pi_xi</span>
+<span id="cb11-34"><a href="#cb11-34" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> log_pmf</span></code></pre></div>
+<p>For the most part, this is a straightforward implementation of the equation above for the multinomial PMF. The <code>gammaln</code> function is from <code>scipy.special</code>, and computes the log-gamma function, <span class="math inline">\(\log{\Gamma(x)}\)</span>. As mentioned above, it is more convenient to use the gamma function rather than a factorial function; this is because SciPy gives us a log-gamma function, but not a log-factorial function. We could have computed a log factorial ourselves, using something like:</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>log_n_factorial <span class="op">=</span> np.<span class="bu">sum</span>(np.log(np.arange(<span class="dv">1</span>, n <span class="op">+</span> <span class="dv">1</span>)))</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>sum_log_xi_factorial <span class="op">=</span> np.<span class="bu">sum</span>([np.<span class="bu">sum</span>(np.log(np.arange(<span class="dv">1</span>, i <span class="op">+</span> <span class="dv">1</span>))) <span class="cf">for</span> i <span class="kw">in</span> x])</span></code></pre></div>
+<p>but it is easier to understand, easier to code, and more computationally efficient if we use the gamma function already built in to SciPy.</p>
+<p>There is one edge case that we need to tackle: when one of our probabilities is zero. When <span class="math inline">\(p_i=0\)</span>, then <span class="math inline">\(\log{p_i}=-\infty\)</span>. This would be fine, except for the following behavior when infinity is multiplied by zero:</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="co"># it&#39;s fine to multiply infinity by integers...</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="op">-</span>np.inf <span class="op">*</span> <span class="fl">2.0</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="op">-</span>inf</span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="co"># ...but things break when we try to multiply by zero</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="op">-</span>np.inf <span class="op">*</span> <span class="fl">0.0</span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>nan</span></code></pre></div>
+<p><code>nan</code> means “not a number”, and it is almost always a pain to deal with, because most computations with <code>nan</code> result in another <code>nan</code>. So, if we don’t handle the case where <span class="math inline">\(p_i=0\)</span> and <span class="math inline">\(x_i=0\)</span>, we will end up with a <code>nan</code>. That will get summed with other numbers, producing another <code>nan</code>, which is just not useful. To handle this, we check specifically for the case when <span class="math inline">\(x_i=0\)</span>, and set the resulting <span class="math inline">\(x_i\cdot{}\log(p_i)\)</span> also to zero.</p>
+<p>Let’s return for a moment to our discussion of using logs. Even if we really only need the PMF, and not the log-PMF, it is generally better to <em>first</em> compute it with logs, and then exponentiate it if we need to:</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> pmf(<span class="va">self</span>, x):</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Evaluates the probability mass function (PMF) of a multinomial</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a><span class="co">    with outcome probabilities `self.p` for a draw `x`.</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a><span class="co">    Parameters</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a><span class="co">    ----------</span></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a><span class="co">    x: numpy array of length `k`</span></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a><span class="co">        The number of occurrences of each outcome</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a><span class="co">    Returns</span></span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a><span class="co">    -------</span></span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a><span class="co">    The evaluated PMF for draw `x`</span></span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a><span class="co">    &quot;&quot;&quot;</span></span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a>    pmf <span class="op">=</span> np.exp(<span class="va">self</span>.log_pmf(x))</span>
+<span id="cb14-16"><a href="#cb14-16" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> pmf</span></code></pre></div>
+<p>To further drive home the importance of working with logs, we can look at an example with just the multinomial:</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> dist <span class="op">=</span> MultinomialDistribution(np.array([<span class="fl">0.25</span>, <span class="fl">0.25</span>, <span class="fl">0.25</span>, <span class="fl">0.25</span>]))</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> dist.log_pmf(np.array([<span class="dv">1000</span>, <span class="dv">0</span>, <span class="dv">0</span>, <span class="dv">0</span>])</span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a><span class="op">-</span><span class="fl">1386.2943611198905</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> dist.log_pmf(np.array([<span class="dv">999</span>, <span class="dv">0</span>, <span class="dv">0</span>, <span class="dv">0</span>])</span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a><span class="op">-</span><span class="fl">1384.9080667587707</span></span></code></pre></div>
+<p>In this case, we get <em>extremely</em> small probabilities (which, you will notice, are much smaller than the <code>tiny</code> value we discussed above). This is because the fraction in the PMF is huge: 1000 factorial can’t even be computed due to overflow. But, the <em>log</em> of the factorial can be:</p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="im">from</span> scipy.special <span class="im">import</span> gamma, gammaln</span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> gamma(<span class="dv">1000</span> <span class="op">+</span> <span class="dv">1</span>)</span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>inf</span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> gammaln(<span class="dv">1000</span> <span class="op">+</span> <span class="dv">1</span>)</span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a><span class="fl">5912.1281784881639</span></span></code></pre></div>
+<p>If we had tried to compute just the PMF using the <code>gamma</code> function, we would have ended up with <code>gamma(1000 + 1) / gamma(1000 + 1)</code>, which results in a <code>nan</code> value (even though we can see that it should be 1). But, because we do the computation with logarithms, it’s not an issue and we don’t need to worry about it!</p>
+<h2 id="sampling-magical-items-revisited">Sampling Magical Items, Revisited</h2>
+<p>Now that we have written our multinomial functions, we can put them to work to generate our magical items. To do this, we will create a class called <code>MagicItemDistribution</code>, located in the file <code>rpg.py</code>:</p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> MagicItemDistribution(<span class="bu">object</span>):</span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>    <span class="co"># these are the names (and order) of the stats that all magical</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>    <span class="co"># items will have</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>    stats_names <span class="op">=</span> (<span class="st">&quot;dexterity&quot;</span>, <span class="st">&quot;constitution&quot;</span>, <span class="st">&quot;strength&quot;</span>,</span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>                   <span class="st">&quot;intelligence&quot;</span>, <span class="st">&quot;wisdom&quot;</span>, <span class="st">&quot;charisma&quot;</span>)</span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, bonus_probs, stats_probs, rso<span class="op">=</span>np.random):</span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot;Initialize a magic item distribution parameterized by `bonus_probs`</span></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a><span class="co">        and `stats_probs`.</span></span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a><span class="co">        Parameters</span></span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a><span class="co">        ----------</span></span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a><span class="co">        bonus_probs: numpy array of length m</span></span>
+<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a><span class="co">            The probabilities of the overall bonuses. Each index in</span></span>
+<span id="cb17-16"><a href="#cb17-16" aria-hidden="true" tabindex="-1"></a><span class="co">            the array corresponds to the bonus of that amount (e.g.,</span></span>
+<span id="cb17-17"><a href="#cb17-17" aria-hidden="true" tabindex="-1"></a><span class="co">            index 0 is +0, index 1 is +1, etc.)</span></span>
+<span id="cb17-18"><a href="#cb17-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-19"><a href="#cb17-19" aria-hidden="true" tabindex="-1"></a><span class="co">        stats_probs: numpy array of length 6</span></span>
+<span id="cb17-20"><a href="#cb17-20" aria-hidden="true" tabindex="-1"></a><span class="co">            The probabilities of how the overall bonus is distributed</span></span>
+<span id="cb17-21"><a href="#cb17-21" aria-hidden="true" tabindex="-1"></a><span class="co">            among the different stats. `stats_probs[i]` corresponds to</span></span>
+<span id="cb17-22"><a href="#cb17-22" aria-hidden="true" tabindex="-1"></a><span class="co">            the probability of giving a bonus point to the ith stat;</span></span>
+<span id="cb17-23"><a href="#cb17-23" aria-hidden="true" tabindex="-1"></a><span class="co">            i.e., the value at `MagicItemDistribution.stats_names[i]`.</span></span>
+<span id="cb17-24"><a href="#cb17-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-25"><a href="#cb17-25" aria-hidden="true" tabindex="-1"></a><span class="co">        rso: numpy RandomState object (default: np.random)</span></span>
+<span id="cb17-26"><a href="#cb17-26" aria-hidden="true" tabindex="-1"></a><span class="co">            The random number generator</span></span>
+<span id="cb17-27"><a href="#cb17-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-28"><a href="#cb17-28" aria-hidden="true" tabindex="-1"></a><span class="co">        &quot;&quot;&quot;</span></span>
+<span id="cb17-29"><a href="#cb17-29" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Create the multinomial distributions we&#39;ll be using</span></span>
+<span id="cb17-30"><a href="#cb17-30" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.bonus_dist <span class="op">=</span> MultinomialDistribution(bonus_probs, rso<span class="op">=</span>rso)</span>
+<span id="cb17-31"><a href="#cb17-31" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.stats_dist <span class="op">=</span> MultinomialDistribution(stats_probs, rso<span class="op">=</span>rso)</span></code></pre></div>
+<p>The constructor to our <code>MagicItemDistribution</code> class takes parameters for the bonus probabilities, the stats probabilities, and the random number generator. Even though we specified above what we wanted the bonus probabilities to be, it is generally a good idea to encode parameters as arguments that are passed in. This leaves open the possibility of sampling items under different distributions. (For example, maybe the bonus probabilities would change as the player’s level increases.) We encode the <em>names</em> of the stats as a class variable, <code>stats_names</code>, though this could just as easily be another parameter to the constructor.</p>
+<p>As mentioned previously, there are two steps to sampling a magical item: first sampling the overall bonus, and then sampling the distribution of the bonus across the stats. As such, we code these steps as two methods: <code>_sample_bonus</code> and <code>_sample_stats</code>:</p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _sample_bonus(<span class="va">self</span>):</span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Sample a value of the overall bonus.</span></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a><span class="co">    Returns</span></span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a><span class="co">    -------</span></span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a><span class="co">    integer</span></span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a><span class="co">        The overall bonus</span></span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a><span class="co">    &quot;&quot;&quot;</span></span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>    <span class="co"># The bonus is essentially just a sample from a multinomial</span></span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a>    <span class="co"># distribution with n=1; i.e., only one event occurs.</span></span>
+<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a>    sample <span class="op">=</span> <span class="va">self</span>.bonus_dist.sample(<span class="dv">1</span>)</span>
+<span id="cb18-13"><a href="#cb18-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-14"><a href="#cb18-14" aria-hidden="true" tabindex="-1"></a>    <span class="co"># `sample` is an array of zeros and a single one at the</span></span>
+<span id="cb18-15"><a href="#cb18-15" aria-hidden="true" tabindex="-1"></a>    <span class="co"># location corresponding to the bonus. We want to convert this</span></span>
+<span id="cb18-16"><a href="#cb18-16" aria-hidden="true" tabindex="-1"></a>    <span class="co"># one into the actual value of the bonus.</span></span>
+<span id="cb18-17"><a href="#cb18-17" aria-hidden="true" tabindex="-1"></a>    bonus <span class="op">=</span> np.argmax(sample)</span>
+<span id="cb18-18"><a href="#cb18-18" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> bonus</span>
+<span id="cb18-19"><a href="#cb18-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-20"><a href="#cb18-20" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _sample_stats(<span class="va">self</span>):</span>
+<span id="cb18-21"><a href="#cb18-21" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Sample the overall bonus and how it is distributed across the</span></span>
+<span id="cb18-22"><a href="#cb18-22" aria-hidden="true" tabindex="-1"></a><span class="co">    different stats.</span></span>
+<span id="cb18-23"><a href="#cb18-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-24"><a href="#cb18-24" aria-hidden="true" tabindex="-1"></a><span class="co">    Returns</span></span>
+<span id="cb18-25"><a href="#cb18-25" aria-hidden="true" tabindex="-1"></a><span class="co">    -------</span></span>
+<span id="cb18-26"><a href="#cb18-26" aria-hidden="true" tabindex="-1"></a><span class="co">    numpy array of length 6</span></span>
+<span id="cb18-27"><a href="#cb18-27" aria-hidden="true" tabindex="-1"></a><span class="co">        The number of bonus points for each stat</span></span>
+<span id="cb18-28"><a href="#cb18-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-29"><a href="#cb18-29" aria-hidden="true" tabindex="-1"></a><span class="co">    &quot;&quot;&quot;</span></span>
+<span id="cb18-30"><a href="#cb18-30" aria-hidden="true" tabindex="-1"></a>    <span class="co"># First we need to sample the overall bonus</span></span>
+<span id="cb18-31"><a href="#cb18-31" aria-hidden="true" tabindex="-1"></a>    bonus <span class="op">=</span> <span class="va">self</span>._sample_bonus()</span>
+<span id="cb18-32"><a href="#cb18-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-33"><a href="#cb18-33" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Then, we use a different multinomial distribution to sample</span></span>
+<span id="cb18-34"><a href="#cb18-34" aria-hidden="true" tabindex="-1"></a>    <span class="co"># how that bonus is distributed. The bonus corresponds to the</span></span>
+<span id="cb18-35"><a href="#cb18-35" aria-hidden="true" tabindex="-1"></a>    <span class="co"># number of events.</span></span>
+<span id="cb18-36"><a href="#cb18-36" aria-hidden="true" tabindex="-1"></a>    stats <span class="op">=</span> <span class="va">self</span>.stats_dist.sample(bonus)</span>
+<span id="cb18-37"><a href="#cb18-37" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> stats</span></code></pre></div>
+<p>We <em>could</em> have made these a single method—especially since <code>_sample_stats</code> is the only function that depends on <code>_sample_bonus</code>—but I have chosen to keep them separate, both because it makes the sampling routine easier to understand, and because breaking it up into smaller pieces makes the code easier to test.</p>
+<p>You’ll also notice that these methods are prefixed with an underscore, indicating that they’re not really meant to be used outside the class. Instead, we provide the function <code>sample</code>:</p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> sample(<span class="va">self</span>):</span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Sample a random magical item.</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a><span class="co">    Returns</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a><span class="co">    -------</span></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a><span class="co">    dictionary</span></span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a><span class="co">        The keys are the names of the stats, and the values are</span></span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a><span class="co">        the bonus conferred to the corresponding stat.</span></span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a><span class="co">    &quot;&quot;&quot;</span></span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a>    stats <span class="op">=</span> <span class="va">self</span>._sample_stats()</span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a>    item_stats <span class="op">=</span> <span class="bu">dict</span>(<span class="bu">zip</span>(<span class="va">self</span>.stats_names, stats))</span>
+<span id="cb19-13"><a href="#cb19-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> item_stats</span></code></pre></div>
+<p>The <code>sample</code> function does essentially the same thing as <code>_sample_stats</code>, except that it returns a dictionary with the stats’ names as keys. This provides a clean and understandable interface for sampling items—it is obvious which stats have how many bonus points—but it also keeps open the option of using just <code>_sample_stats</code> if one needs to take many samples and efficiency is required.</p>
+<p>We use a similar design for evaluating the probability of items. Again, we expose high-level methods <code>pmf</code> and <code>log_pmf</code> which take dictionaries of the form produced by <code>sample</code>:</p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> log_pmf(<span class="va">self</span>, item):</span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Compute the log probability of the given magical item.</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a><span class="co">    Parameters</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a><span class="co">    ----------</span></span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a><span class="co">    item: dictionary</span></span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a><span class="co">        The keys are the names of the stats, and the values are</span></span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a><span class="co">        the bonuses conferred to the corresponding stat.</span></span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-10"><a href="#cb20-10" aria-hidden="true" tabindex="-1"></a><span class="co">    Returns</span></span>
+<span id="cb20-11"><a href="#cb20-11" aria-hidden="true" tabindex="-1"></a><span class="co">    -------</span></span>
+<span id="cb20-12"><a href="#cb20-12" aria-hidden="true" tabindex="-1"></a><span class="co">    float</span></span>
+<span id="cb20-13"><a href="#cb20-13" aria-hidden="true" tabindex="-1"></a><span class="co">        The value corresponding to log(p(item))</span></span>
+<span id="cb20-14"><a href="#cb20-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-15"><a href="#cb20-15" aria-hidden="true" tabindex="-1"></a><span class="co">    &quot;&quot;&quot;</span></span>
+<span id="cb20-16"><a href="#cb20-16" aria-hidden="true" tabindex="-1"></a>    <span class="co"># First pull out the bonus points for each stat, in the</span></span>
+<span id="cb20-17"><a href="#cb20-17" aria-hidden="true" tabindex="-1"></a>    <span class="co"># correct order, then pass that to _stats_log_pmf.</span></span>
+<span id="cb20-18"><a href="#cb20-18" aria-hidden="true" tabindex="-1"></a>    stats <span class="op">=</span> np.array([item[stat] <span class="cf">for</span> stat <span class="kw">in</span> <span class="va">self</span>.stats_names])</span>
+<span id="cb20-19"><a href="#cb20-19" aria-hidden="true" tabindex="-1"></a>    log_pmf <span class="op">=</span> <span class="va">self</span>._stats_log_pmf(stats)</span>
+<span id="cb20-20"><a href="#cb20-20" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> log_pmf</span>
+<span id="cb20-21"><a href="#cb20-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-22"><a href="#cb20-22" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> pmf(<span class="va">self</span>, item):</span>
+<span id="cb20-23"><a href="#cb20-23" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Compute the probability the given magical item.</span></span>
+<span id="cb20-24"><a href="#cb20-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-25"><a href="#cb20-25" aria-hidden="true" tabindex="-1"></a><span class="co">    Parameters</span></span>
+<span id="cb20-26"><a href="#cb20-26" aria-hidden="true" tabindex="-1"></a><span class="co">    ----------</span></span>
+<span id="cb20-27"><a href="#cb20-27" aria-hidden="true" tabindex="-1"></a><span class="co">    item: dictionary</span></span>
+<span id="cb20-28"><a href="#cb20-28" aria-hidden="true" tabindex="-1"></a><span class="co">        The keys are the names of the stats, and the values are</span></span>
+<span id="cb20-29"><a href="#cb20-29" aria-hidden="true" tabindex="-1"></a><span class="co">        the bonus conferred to the corresponding stat.</span></span>
+<span id="cb20-30"><a href="#cb20-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-31"><a href="#cb20-31" aria-hidden="true" tabindex="-1"></a><span class="co">    Returns</span></span>
+<span id="cb20-32"><a href="#cb20-32" aria-hidden="true" tabindex="-1"></a><span class="co">    -------</span></span>
+<span id="cb20-33"><a href="#cb20-33" aria-hidden="true" tabindex="-1"></a><span class="co">    float</span></span>
+<span id="cb20-34"><a href="#cb20-34" aria-hidden="true" tabindex="-1"></a><span class="co">        The value corresponding to p(item)</span></span>
+<span id="cb20-35"><a href="#cb20-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-36"><a href="#cb20-36" aria-hidden="true" tabindex="-1"></a><span class="co">    &quot;&quot;&quot;</span></span>
+<span id="cb20-37"><a href="#cb20-37" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> np.exp(<span class="va">self</span>.log_pmf(item))</span></code></pre></div>
+<p>These methods rely on <code>_stats_log_pmf</code>, which computes the probability of the stats (but which takes an array rather than a dictionary):</p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _stats_log_pmf(<span class="va">self</span>, stats):</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Evaluate the log-PMF for the given distribution of bonus points</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a><span class="co">    across the different stats.</span></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a><span class="co">    Parameters</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a><span class="co">    ----------</span></span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a><span class="co">    stats: numpy array of length 6</span></span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a><span class="co">        The distribution of bonus points across the stats</span></span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a><span class="co">    Returns</span></span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a><span class="co">    -------</span></span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a><span class="co">    float</span></span>
+<span id="cb21-13"><a href="#cb21-13" aria-hidden="true" tabindex="-1"></a><span class="co">        The value corresponding to log(p(stats))</span></span>
+<span id="cb21-14"><a href="#cb21-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-15"><a href="#cb21-15" aria-hidden="true" tabindex="-1"></a><span class="co">    &quot;&quot;&quot;</span></span>
+<span id="cb21-16"><a href="#cb21-16" aria-hidden="true" tabindex="-1"></a>    <span class="co"># There are never any leftover bonus points, so the sum of the</span></span>
+<span id="cb21-17"><a href="#cb21-17" aria-hidden="true" tabindex="-1"></a>    <span class="co"># stats gives us the total bonus.</span></span>
+<span id="cb21-18"><a href="#cb21-18" aria-hidden="true" tabindex="-1"></a>    total_bonus <span class="op">=</span> np.<span class="bu">sum</span>(stats)</span>
+<span id="cb21-19"><a href="#cb21-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-20"><a href="#cb21-20" aria-hidden="true" tabindex="-1"></a>    <span class="co"># First calculate the probability of the total bonus</span></span>
+<span id="cb21-21"><a href="#cb21-21" aria-hidden="true" tabindex="-1"></a>    logp_bonus <span class="op">=</span> <span class="va">self</span>._bonus_log_pmf(total_bonus)</span>
+<span id="cb21-22"><a href="#cb21-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-23"><a href="#cb21-23" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Then calculate the probability of the stats</span></span>
+<span id="cb21-24"><a href="#cb21-24" aria-hidden="true" tabindex="-1"></a>    logp_stats <span class="op">=</span> <span class="va">self</span>.stats_dist.log_pmf(stats)</span>
+<span id="cb21-25"><a href="#cb21-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-26"><a href="#cb21-26" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Then multiply them together (using addition, because we are</span></span>
+<span id="cb21-27"><a href="#cb21-27" aria-hidden="true" tabindex="-1"></a>    <span class="co"># working with logs)</span></span>
+<span id="cb21-28"><a href="#cb21-28" aria-hidden="true" tabindex="-1"></a>    log_pmf <span class="op">=</span> logp_bonus <span class="op">+</span> logp_stats</span>
+<span id="cb21-29"><a href="#cb21-29" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> log_pmf</span></code></pre></div>
+<p>The method <code>_stats_log_pmf</code>, in turn, relies on <code>_bonus_log_pmf</code>, which computes the probability of the overall bonus:</p>
+<div class="sourceCode" id="cb22"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _bonus_log_pmf(<span class="va">self</span>, bonus):</span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Evaluate the log-PMF for the given bonus.</span></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a><span class="co">    Parameters</span></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a><span class="co">    ----------</span></span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a><span class="co">    bonus: integer</span></span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a><span class="co">        The total bonus.</span></span>
+<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a><span class="co">    Returns</span></span>
+<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a><span class="co">    -------</span></span>
+<span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a><span class="co">    float</span></span>
+<span id="cb22-12"><a href="#cb22-12" aria-hidden="true" tabindex="-1"></a><span class="co">        The value corresponding to log(p(bonus))</span></span>
+<span id="cb22-13"><a href="#cb22-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-14"><a href="#cb22-14" aria-hidden="true" tabindex="-1"></a><span class="co">    &quot;&quot;&quot;</span></span>
+<span id="cb22-15"><a href="#cb22-15" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Make sure the value that is passed in is within the</span></span>
+<span id="cb22-16"><a href="#cb22-16" aria-hidden="true" tabindex="-1"></a>    <span class="co"># appropriate bounds</span></span>
+<span id="cb22-17"><a href="#cb22-17" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> bonus <span class="op">&lt;</span> <span class="dv">0</span> <span class="kw">or</span> bonus <span class="op">&gt;=</span> <span class="bu">len</span>(<span class="va">self</span>.bonus_dist.p):</span>
+<span id="cb22-18"><a href="#cb22-18" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="op">-</span>np.inf</span>
+<span id="cb22-19"><a href="#cb22-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-20"><a href="#cb22-20" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Convert the scalar bonus value into a vector of event</span></span>
+<span id="cb22-21"><a href="#cb22-21" aria-hidden="true" tabindex="-1"></a>    <span class="co"># occurrences</span></span>
+<span id="cb22-22"><a href="#cb22-22" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> np.zeros(<span class="bu">len</span>(<span class="va">self</span>.bonus_dist.p))</span>
+<span id="cb22-23"><a href="#cb22-23" aria-hidden="true" tabindex="-1"></a>    x[bonus] <span class="op">=</span> <span class="dv">1</span></span>
+<span id="cb22-24"><a href="#cb22-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-25"><a href="#cb22-25" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="va">self</span>.bonus_dist.log_pmf(x)</span></code></pre></div>
+<p>We can now create our distribution as follows:</p>
+<div class="sourceCode" id="cb23"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="im">import</span> numpy <span class="im">as</span> np</span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="im">from</span> rpg <span class="im">import</span> MagicItemDistribution</span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> bonus_probs <span class="op">=</span> np.array([<span class="fl">0.0</span>, <span class="fl">0.55</span>, <span class="fl">0.25</span>, <span class="fl">0.12</span>, <span class="fl">0.06</span>, <span class="fl">0.02</span>])</span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> stats_probs <span class="op">=</span> np.ones(<span class="dv">6</span>) <span class="op">/</span> <span class="fl">6.0</span></span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> rso <span class="op">=</span> np.random.RandomState(<span class="dv">234892</span>)</span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> item_dist <span class="op">=</span> MagicItemDistribution(bonus_probs, stats_probs, rso<span class="op">=</span>rso)</span></code></pre></div>
+<p>Once created, we can use it to generate a few different items:</p>
+<pre><code>&gt;&gt;&gt; item_dist.sample()
+{&#39;dexterity&#39;: 0, &#39;strength&#39;: 0, &#39;constitution&#39;: 0, 
+ &#39;intelligence&#39;: 0, &#39;wisdom&#39;: 0, &#39;charisma&#39;: 1}
+&gt;&gt;&gt; item_dist.sample()
+{&#39;dexterity&#39;: 0, &#39;strength&#39;: 0, &#39;constitution&#39;: 1, 
+ &#39;intelligence&#39;: 0, &#39;wisdom&#39;: 2, &#39;charisma&#39;: 0}
+&gt;&gt;&gt; item_dist.sample()
+{&#39;dexterity&#39;: 1, &#39;strength&#39;: 0, &#39;constitution&#39;: 1, 
+ &#39;intelligence&#39;: 0, &#39;wisdom&#39;: 0, &#39;charisma&#39;: 0}</code></pre>
+<p>And, if we want, we can evaluate the probability of a sampled item:</p>
+<pre><code>&gt;&gt;&gt; item = item_dist.sample()
+&gt;&gt;&gt; item
+{&#39;dexterity&#39;: 0, &#39;strength&#39;: 0, &#39;constitution&#39;: 0, 
+ &#39;intelligence&#39;: 0, &#39;wisdom&#39;: 2, &#39;charisma&#39;: 0}
+&gt;&gt;&gt; item_dist.log_pmf(item)
+-4.9698132995760007
+&gt;&gt;&gt; item_dist.pmf(item)
+0.0069444444444444441</code></pre>
+<h2 id="estimating-attack-damage">Estimating Attack Damage</h2>
+<p>We’ve seen one application of sampling: generating random items that monsters drop. I mentioned earlier that sampling can also be used when you want to estimate something from the distribution as a whole, and there are certainly cases in which we could use our <code>MagicItemDistribution</code> to do this. For example, let’s say that damage in our RPG works by rolling some number of D12s (twelve-sided dice). The player gets to roll one die by default, and then add dice according to their strength bonus. So, for example, if they have a +2 strength bonus, they can roll three dice. The damage dealt is then the sum of the dice.</p>
+<p>We might want to know how much damage a player might deal after finding some number of weapons; e.g., as a factor in setting the difficulty of monsters. Let’s say that after collecting two items, we want the player to be able to defeat monsters within three hits in about 50% of the battles. How many hit points should the monster have?</p>
+<p>One way to answer this question is through sampling. We can use the following scheme:</p>
+<ol type="1">
+<li>Randomly pick a magic item.</li>
+<li>Based on the item’s bonuses, compute the number of dice that will be rolled when attacking.</li>
+<li>Based on the number of dice that will be rolled, generate a sample for the damage inflicted over three hits.</li>
+<li>Repeat steps 1-3 many times. This will result in an approximation to the distribution over damage.</li>
+</ol>
+<h3 id="implementing-a-distribution-over-damage">Implementing a Distribution Over Damage</h3>
+<p>The class <code>DamageDistribution</code> (also in <code>rpg.py</code>) shows an implementation of this scheme:</p>
+<div class="sourceCode" id="cb26"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> DamageDistribution(<span class="bu">object</span>):</span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, num_items, item_dist,</span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a>                 num_dice_sides<span class="op">=</span><span class="dv">12</span>, num_hits<span class="op">=</span><span class="dv">1</span>, rso<span class="op">=</span>np.random):</span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot;Initialize a distribution over attack damage. This object can</span></span>
+<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a><span class="co">        sample possible values for the attack damage dealt over</span></span>
+<span id="cb26-7"><a href="#cb26-7" aria-hidden="true" tabindex="-1"></a><span class="co">        `num_hits` hits when the player has `num_items` items, and</span></span>
+<span id="cb26-8"><a href="#cb26-8" aria-hidden="true" tabindex="-1"></a><span class="co">        where attack damage is computed by rolling dice with</span></span>
+<span id="cb26-9"><a href="#cb26-9" aria-hidden="true" tabindex="-1"></a><span class="co">        `num_dice_sides` sides.</span></span>
+<span id="cb26-10"><a href="#cb26-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-11"><a href="#cb26-11" aria-hidden="true" tabindex="-1"></a><span class="co">        Parameters</span></span>
+<span id="cb26-12"><a href="#cb26-12" aria-hidden="true" tabindex="-1"></a><span class="co">        ----------</span></span>
+<span id="cb26-13"><a href="#cb26-13" aria-hidden="true" tabindex="-1"></a><span class="co">        num_items: int</span></span>
+<span id="cb26-14"><a href="#cb26-14" aria-hidden="true" tabindex="-1"></a><span class="co">            The number of items the player has.</span></span>
+<span id="cb26-15"><a href="#cb26-15" aria-hidden="true" tabindex="-1"></a><span class="co">        item_dist: MagicItemDistribution object</span></span>
+<span id="cb26-16"><a href="#cb26-16" aria-hidden="true" tabindex="-1"></a><span class="co">            The distribution over magic items.</span></span>
+<span id="cb26-17"><a href="#cb26-17" aria-hidden="true" tabindex="-1"></a><span class="co">        num_dice_sides: int (default: 12)</span></span>
+<span id="cb26-18"><a href="#cb26-18" aria-hidden="true" tabindex="-1"></a><span class="co">            The number of sides on each die.</span></span>
+<span id="cb26-19"><a href="#cb26-19" aria-hidden="true" tabindex="-1"></a><span class="co">        num_hits: int (default: 1)</span></span>
+<span id="cb26-20"><a href="#cb26-20" aria-hidden="true" tabindex="-1"></a><span class="co">            The number of hits across which we want to calculate damage.</span></span>
+<span id="cb26-21"><a href="#cb26-21" aria-hidden="true" tabindex="-1"></a><span class="co">        rso: numpy RandomState object (default: np.random)</span></span>
+<span id="cb26-22"><a href="#cb26-22" aria-hidden="true" tabindex="-1"></a><span class="co">            The random number generator</span></span>
+<span id="cb26-23"><a href="#cb26-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-24"><a href="#cb26-24" aria-hidden="true" tabindex="-1"></a><span class="co">        &quot;&quot;&quot;</span></span>
+<span id="cb26-25"><a href="#cb26-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-26"><a href="#cb26-26" aria-hidden="true" tabindex="-1"></a>        <span class="co"># This is an array of integers corresponding to the sides of a</span></span>
+<span id="cb26-27"><a href="#cb26-27" aria-hidden="true" tabindex="-1"></a>        <span class="co"># single die.</span></span>
+<span id="cb26-28"><a href="#cb26-28" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.dice_sides <span class="op">=</span> np.arange(<span class="dv">1</span>, num_dice_sides <span class="op">+</span> <span class="dv">1</span>)</span>
+<span id="cb26-29"><a href="#cb26-29" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-30"><a href="#cb26-30" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Create a multinomial distribution corresponding to one of</span></span>
+<span id="cb26-31"><a href="#cb26-31" aria-hidden="true" tabindex="-1"></a>        <span class="co"># these dice.  Each side has equal probabilities.</span></span>
+<span id="cb26-32"><a href="#cb26-32" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.dice_dist <span class="op">=</span> MultinomialDistribution(</span>
+<span id="cb26-33"><a href="#cb26-33" aria-hidden="true" tabindex="-1"></a>            np.ones(num_dice_sides) <span class="op">/</span> <span class="bu">float</span>(num_dice_sides), rso<span class="op">=</span>rso)</span>
+<span id="cb26-34"><a href="#cb26-34" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-35"><a href="#cb26-35" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.num_hits <span class="op">=</span> num_hits</span>
+<span id="cb26-36"><a href="#cb26-36" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.num_items <span class="op">=</span> num_items</span>
+<span id="cb26-37"><a href="#cb26-37" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.item_dist <span class="op">=</span> item_dist</span>
+<span id="cb26-38"><a href="#cb26-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-39"><a href="#cb26-39" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> sample(<span class="va">self</span>):</span>
+<span id="cb26-40"><a href="#cb26-40" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot;Sample the attack damage.</span></span>
+<span id="cb26-41"><a href="#cb26-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-42"><a href="#cb26-42" aria-hidden="true" tabindex="-1"></a><span class="co">        Returns</span></span>
+<span id="cb26-43"><a href="#cb26-43" aria-hidden="true" tabindex="-1"></a><span class="co">        -------</span></span>
+<span id="cb26-44"><a href="#cb26-44" aria-hidden="true" tabindex="-1"></a><span class="co">        int</span></span>
+<span id="cb26-45"><a href="#cb26-45" aria-hidden="true" tabindex="-1"></a><span class="co">            The sampled damage</span></span>
+<span id="cb26-46"><a href="#cb26-46" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-47"><a href="#cb26-47" aria-hidden="true" tabindex="-1"></a><span class="co">        &quot;&quot;&quot;</span></span>
+<span id="cb26-48"><a href="#cb26-48" aria-hidden="true" tabindex="-1"></a>        <span class="co"># First, we need to randomly generate items (the number of</span></span>
+<span id="cb26-49"><a href="#cb26-49" aria-hidden="true" tabindex="-1"></a>        <span class="co"># which was passed into the constructor).</span></span>
+<span id="cb26-50"><a href="#cb26-50" aria-hidden="true" tabindex="-1"></a>        items <span class="op">=</span> [<span class="va">self</span>.item_dist.sample() <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">xrange</span>(<span class="va">self</span>.num_items)]</span>
+<span id="cb26-51"><a href="#cb26-51" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-52"><a href="#cb26-52" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Based on the item stats (in particular, strength), compute</span></span>
+<span id="cb26-53"><a href="#cb26-53" aria-hidden="true" tabindex="-1"></a>        <span class="co"># the number of dice we get to roll.</span></span>
+<span id="cb26-54"><a href="#cb26-54" aria-hidden="true" tabindex="-1"></a>        num_dice <span class="op">=</span> <span class="dv">1</span> <span class="op">+</span> np.<span class="bu">sum</span>([item[<span class="st">&#39;strength&#39;</span>] <span class="cf">for</span> item <span class="kw">in</span> items])</span>
+<span id="cb26-55"><a href="#cb26-55" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb26-56"><a href="#cb26-56" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Roll the dice and compute the resulting damage.</span></span>
+<span id="cb26-57"><a href="#cb26-57" aria-hidden="true" tabindex="-1"></a>        dice_rolls <span class="op">=</span> <span class="va">self</span>.dice_dist.sample(<span class="va">self</span>.num_hits <span class="op">*</span> num_dice)</span>
+<span id="cb26-58"><a href="#cb26-58" aria-hidden="true" tabindex="-1"></a>        damage <span class="op">=</span> np.<span class="bu">sum</span>(<span class="va">self</span>.dice_sides <span class="op">*</span> dice_rolls)</span>
+<span id="cb26-59"><a href="#cb26-59" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> damage</span></code></pre></div>
+<p>The constructor takes as arguments the number of sides the dice have, how many hits we want to compute damage over, how many items the player has, a distribution over magic items (of type <code>MagicItemDistribution</code>) and a random state object. By default, we set <code>num_dice_sides</code> to 12 because, while it is technically a parameter, it is unlikely to change. Similarly, we set <code>num_hits</code> to 1 as a default because a more likely use case is that we just want to take one sample of the damage for a single hit.</p>
+<p>We then implement the actual sampling logic in <code>sample</code>. (Note the structural similarity to <code>MagicItemDistribution</code>.) First, we generate a set of possible magic items that the player has. Then, we look at the strength stat of those items, and from that compute the number of dice to roll. Finally, we roll the dice (again relying on our trusty multinomial functions) and compute the damage from that.</p>
+<h4 id="what-happened-to-evaluating-probabilities">What Happened to Evaluating Probabilities?</h4>
+<p>You may have noticed that we didn’t include a <code>log_pmf</code> or <code>pmf</code> function in our <code>DamageDistribution</code>. This is because we actually do not know what the PMF should be! This would be the equation:</p>
+<p><span class="math display">\[
+\sum_{{item}_1, \ldots{}, {item}_m} p(\mathrm{damage} \vert \mathrm{item}_1,\ldots{},\mathrm{item}_m)p(\mathrm{item}_1)\cdots{}p(\mathrm{item}_m)
+\]</span></p>
+<p>What this equation says is that we would need to compute the probability of every possible damage amount, given every possible set of <span class="math inline">\(m\)</span> items. We actually <em>could</em> compute this through brute force, but it wouldn’t be pretty. This is actually a perfect example of a case where we want to use sampling to approximate the solution to a problem that we can’t compute exactly (or which would be very difficult to compute exactly). So, rather than having a method for the PMF, we’ll show in the next section how we can approximate the distribution with many samples.</p>
+<h3 id="approximating-the-distribution">Approximating the Distribution</h3>
+<p>Now we have the machinery to answer our question from earlier: If the player has two items, and we want the player to be able to defeat the monster within three hits 50% of the time, how many hit points should the monster have?</p>
+<p>First, we create our distribution object, using the same <code>item_dist</code> and <code>rso</code> that we created earlier:</p>
+<div class="sourceCode" id="cb27"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="im">from</span> rpg <span class="im">import</span> DamageDistribution</span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> damage_dist <span class="op">=</span> DamageDistribution(<span class="dv">2</span>, item_dist, num_hits<span class="op">=</span><span class="dv">3</span>, rso<span class="op">=</span>rso)</span></code></pre></div>
+<p>Now we can draw a bunch of samples, and compute the 50th percentile (the damage value that is greater than 50% of the samples):</p>
+<div class="sourceCode" id="cb28"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> samples <span class="op">=</span> np.array([damage_dist.sample() <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">xrange</span>(<span class="dv">100000</span>)])</span>
+<span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> samples.<span class="bu">min</span>()</span>
+<span id="cb28-3"><a href="#cb28-3" aria-hidden="true" tabindex="-1"></a><span class="dv">3</span></span>
+<span id="cb28-4"><a href="#cb28-4" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> samples.<span class="bu">max</span>()</span>
+<span id="cb28-5"><a href="#cb28-5" aria-hidden="true" tabindex="-1"></a><span class="dv">154</span></span>
+<span id="cb28-6"><a href="#cb28-6" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> np.percentile(samples, <span class="dv">50</span>)</span>
+<span id="cb28-7"><a href="#cb28-7" aria-hidden="true" tabindex="-1"></a><span class="fl">27.0</span></span></code></pre></div>
+<p>If we were to plot a histogram of how many samples we got for each amount of damage, it would look something like <a href="#figure-17.1">Figure 17.1</a>.</p>
+<div class="center figure">
+<a name="figure-17.1"></a><img src="sampler-images/damage_distribution.png" alt="Figure 17.1 - Damage Distribution" title="Figure 17.1 - Damage Distribution" />
+</div>
+<p class="center figcaption">
+<small>Figure 17.1 - Damage Distribution</small>
+</p>
+<p>There is a pretty wide range of damage that the player could potentially inflict, but it has a long tail: the 50th percentile is at 27 points, meaning that in half the samples, the player inflicted no more than 27 points of damage. Thus, if we wanted to use this criteria for setting monster difficulty, we would give them 27 hit points.</p>
+<h2 id="summary">Summary</h2>
+<p>In this chapter, we’ve seen how to write code for generating samples from a non-standard probability distribution, and how to compute the probabilities for those samples as well. In working through this example, we’ve covered several design decisions that are applicable in the general case:</p>
+<ol type="1">
+<li>Representing probability distributions using a class, and including functions both for sampling and for evaluating the PMF (or PDF).</li>
+<li>Computing the PMF (or PDF) using logarithms.</li>
+<li>Generating samples from a random number generator object to enable reproducible randomness.</li>
+<li>Writing functions whose inputs/outputs are clear and understandable (e.g., using dictionaries as the output of <code>MagicItemDistribution.sample</code>) while still exposing the less clear but more efficient and purely numeric version of those functions (e.g., <code>MagicItemDistribution._sample_stats</code>).</li>
+</ol>
+<p>Additionally, we’ve seen how sampling from a probability distribution can be useful both for producing single random values (e.g., generating a single magical item after defeating a monster) and for computing information about a distribution that we would otherwise not know (e.g., discovering how much damage a player with two items is likely to deal). Almost every type of sampling you might encounter falls under one of these two categories; the differences only have to do with what distributions you are sampling from. The general structure of the code—independent of those distributions—remains the same.</p>
+<section class="footnotes" role="doc-endnotes">
+<hr />
+<ol>
+<li id="fn1" role="doc-endnote"><p>This chapter assumes some familiarity with statistics and probability theory.<a href="#fnref1" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn2" role="doc-endnote"><p>NumPy includes functions to draw samples from many different types of distributions. For a full list, take a look at the random sampling module, <code>np.random</code>.<a href="#fnref2" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn3" role="doc-endnote"><p>The functions in <code>np.random</code> actually do rely on a random number generator that we can control: NumPy’s global random number generator. You can set the global seed with <code>np.seed</code>. There’s a tradeoff to using the global generator vs. a local <code>RandomState</code> object. If you use the global generator, then you don’t have to pass around a <code>RandomState</code> object everywhere. However, you also run the risk of depending on some third party code that also uses the global generator without your knowledge. If you use a local object, then it is easier to find out whether there is nondeterminism coming from somewhere other than your own code.<a href="#fnref3" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+</ol>
+</section>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

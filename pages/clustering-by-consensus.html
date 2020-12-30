@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="provenance" content="$Id: index.html 1472 2012-09-21 22:17:41Z audrey $" />
+    <link rel="stylesheet" href="/theme/css/bootstrap.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/bootstrap-responsive.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/code.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/500L.css" type="text/css" />
+    <title>500 Lines or Less | Clustering by Consensus</title>
+    <script type="text/x-mathjax-config">
+        MathJax.Hub.Config({
+          tex2jax: {
+            inlineMath: [['$','$'], ['\\(','\\)']],
+            displayMath: [ ['$$','$$'], ["\\[","\\]"] ],
+          },
+        });
+    </script>
+    <script type="text/javascript" src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+    </script>
+</head>
+  <body>
+    <div class="container">
+      <div class="row">
+        <div class="hero-unit">
+	  <a class='pull-right' href='/en/index.html'></a>
+          <h1>Clustering by Consensus</h1>
+          <h2 class="author">Dustin J. Mitchell</h2>
+          <blockquote class="pull-right">
+            </blockquote>
+
+        </div>
+      </div>
+      <div class="row">
+        <div class='span10 offset1' id='content'>
+          <p><em>Dustin is an open source software developer and release engineer at Mozilla. He has worked on projects as varied as a host configuration system in Puppet, a Flask-based web framework, unit tests for firewall configurations, and a continuous integration framework in Twisted Python. Find him as <a href="http://github.com/djmitche">@djmitche</a> on GitHub or at <a href="mailto:dustin@mozilla.com">dustin@mozilla.com</a>.</em></p>
+<h2 id="introduction">Introduction</h2>
+<p>In this chapter, we’ll explore implementation of a network protocol designed to support reliable distributed computation. Network protocols can be difficult to implement correctly, so we’ll look at some techniques for minimizing bugs and for catching and fixing the remaining few. Building reliable software, too, requires some special development and debugging techniques.</p>
+<h2 id="motivating-example">Motivating Example</h2>
+<p>The focus of this chapter is on the protocol implementation, but as a motivating example let’s consider a simple bank account management service. In this service, each account has a current balance and is identified with an account number. Users access the accounts by requesting operations like “deposit”, “transfer”, or “get-balance”. The “transfer” operation operates on two accounts at once – the source and destination accounts – and must be rejected if the source account’s balance is too low.</p>
+<p>If the service is hosted on a single server, this is easy to implement: use a lock to make sure that transfer operations don’t run in parallel, and verify the source account’s balance in that method. However, a bank cannot rely on a single server for its critical account balances. Instead, the service is <em>distributed</em> over multiple servers, with each running a separate instance of exactly the same code. Users can then contact any server to perform an operation.</p>
+<p>In a naive implementation of distributed processing, each server would keep a local copy of every account’s balance. It would handle any operations it received, and send updates for account balances to other servers. But this approach introduces a serious failure mode: if two servers process operations for the same account at the same time, which new account balance is correct? Even if the servers share operations with one another instead of balances, two simultaneous transfers out of an account might overdraw the account.</p>
+<p>Fundamentally, these failures occur when servers use their local state to perform operations, without first ensuring that the local state matches the state on other servers. For example, imagine that server A receives a transfer operation from Account 101 to Account 202, when server B has already processed another transfer of Account 101’s full balance to Account 202, but not yet informed server A. The local state on server A is different from that on server B, so server A incorrectly allows the transfer to complete, even though the result is an overdraft on Account 101.</p>
+<h2 id="distributed-state-machines">Distributed State Machines</h2>
+<p>The technique for avoiding such problems is called a “distributed state machine”. The idea is that each server executes exactly the same deterministic state machine on exactly the same inputs. By the nature of state machines, then, each server will see exactly the same outputs. Operations such as “transfer” or “get-balance”, together with their parameters (account numbers and amounts) represent the inputs to the state machine.</p>
+<p>The state machine for this application is simple:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> execute_operation(state, operation):</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> operation.name <span class="op">==</span> <span class="st">&#39;deposit&#39;</span>:</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="kw">not</span> verify_signature(operation.deposit_signature):</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> state, <span class="va">False</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>            state.accounts[operation.destination_account] <span class="op">+=</span> operation.amount</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> state, <span class="va">True</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> operation.name <span class="op">==</span> <span class="st">&#39;transfer&#39;</span>:</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> state.accounts[operation.source_account] <span class="op">&lt;</span> operation.amount:</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> state, <span class="va">False</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>            state.accounts[operation.source_account] <span class="op">-=</span> operation.amount</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>            state.accounts[operation.destination_account] <span class="op">+=</span> operation.amount</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> state, <span class="va">True</span></span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> operation.name <span class="op">==</span> <span class="st">&#39;get-balance&#39;</span>:</span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> state, state.accounts[operation.account]</span></code></pre></div>
+<p>Note that executing the “get-balance” operation does not modify the state, but is still implemented as a state transition. This guarantees that the returned balance is the latest information in the cluster of servers, and is not based on the (possibly stale) local state on a single server.</p>
+<p>This may look different than the typical state machine you’d learn about in a computer science course. Rather than a finite set of named states with labeled transitions, this machine’s state is the collection of account balances, so there are infinite possible states. Still, the usual rules of deterministic state machines apply: starting with the same state and processing the same operations will always produce the same output.</p>
+<p>So, the distributed state machine technique ensures that the same operations occur on each host. But the problem remains of ensuring that every server agrees on the inputs to the state machine. This is a problem of <em>consensus</em>, and we’ll address it with a derivative of the Paxos algorithm.</p>
+<h2 id="consensus-by-paxos">Consensus by Paxos</h2>
+<p>Paxos was described by Leslie Lamport in a fanciful paper, first submitted in 1990 and eventually published in 1998, entitled “The Part-Time Parliament”<a href="#fn1" class="footnote-ref" id="fnref1" role="doc-noteref"><sup>1</sup></a>. Lamport’s paper has a great deal more detail than we will get into here, and is a fun read. The references at the end of the chapter describe some extensions of the algorithm that we have adapted in this implementation.</p>
+<p>The simplest form of Paxos provides a way for a set of servers to agree on one value, for all time. Multi-Paxos builds on this foundation by agreeing on a numbered sequence of facts, one at a time. To implement a distributed state machine, we use Multi-Paxos to agree on each state-machine input, and execute them in sequence.</p>
+<h3 id="simple-paxos">Simple Paxos</h3>
+<p>So let’s start with “Simple Paxos”, also known as the Synod protocol, which provides a way to agree on a single value that can never change. The name Paxos comes from the mythical island in “The Part-Time Parliament”, where lawmakers vote on legislation through a process Lamport dubbed the Synod protocol.</p>
+<p>The algorithm is a building block for more complex algorithms, as we’ll see below. The single value we’ll agree on in this example is the first transaction processed by our hypothetical bank. While the bank will process transactions every day, the first transaction will only occur once and never change, so we can use Simple Paxos to agree on its details.</p>
+<p>The protocol operates in a series of ballots, each led by a single member of the cluster, called the proposer. Each ballot has a unique ballot number based on an integer and the proposer’s identity. The proposer’s goal is to get a majority of cluster members, acting as acceptors, to accept its value, but only if another value has not already been decided.</p>
+<div class="center figure">
+<a name="figure-3.1"></a><img src="cluster-images/ballot.png" alt="Figure 3.1 - A Ballot" title="Figure 3.1 - A Ballot" />
+</div>
+<p class="center figcaption">
+<small>Figure 3.1 - A Ballot</small>
+</p>
+<p>A ballot begins with the proposer sending a <code>Prepare</code> message with the ballot number <em>N</em> to the acceptors and waiting to hear from a majority (<a href="#figure-3.1">Figure 3.1</a>.)</p>
+<p>The <code>Prepare</code> message is a request for the accepted value (if any) with the highest ballot number less than <em>N</em>. Acceptors respond with a <code>Promise</code> containing any value they have already accepted, and promising not to accept any ballot numbered less than <em>N</em> in the future. If the acceptor has already made a promise for a larger ballot number, it includes that number in the <code>Promise</code>, indicating that the proposer has been pre-empted. In this case, the ballot is over, but the proposer is free to try again in another ballot (and with a larger ballot number).</p>
+<p>When the proposer has heard back from a majority of the acceptors, it sends an <code>Accept</code> message, including the ballot number and value, to all acceptors. If the proposer did not receive any existing value from any acceptor, then it sends its own desired value. Otherwise, it sends the value from the highest-numbered promise.</p>
+<p>Unless it would violate a promise, each acceptor records the value from the <code>Accept</code> message as accepted and replies with an <code>Accepted</code> message. The ballot is complete and the value decided when the proposer has heard its ballot number from a majority of acceptors.</p>
+<p>Returning to the example, initially no other value has been accepted, so the acceptors all send back a <code>Promise</code> with no value, and the proposer sends an <code>Accept</code> containing its value, say:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>    operation(name<span class="op">=</span><span class="st">&#39;deposit&#39;</span>, amount<span class="op">=</span><span class="fl">100.00</span>, destination_account<span class="op">=</span><span class="st">&#39;Mike DiBernardo&#39;</span>)</span></code></pre></div>
+<p>If another proposer later initiates a ballot with a lower ballot number and a different operation (say, a transfer to acount <code>'Dustin J. Mitchell'</code>), the acceptors will simply not accept it. If that ballot has a larger ballot number, then the <code>Promise</code> from the acceptors will inform the proposer about Michael’s $100.00 deposit operation, and the proposer will send that value in the <code>Accept</code> message instead of the transfer to Dustin. The new ballot will be accepted, but in favor of the same value as the first ballot.</p>
+<p>In fact, the protocol will never allow two different values to be decided, even if the ballots overlap, messages are delayed, or a minority of acceptors fail.</p>
+<p>When multiple proposers make a ballot at the same time, it is easy for neither ballot to be accepted. Both proposers then re-propose, and hopefully one wins, but the deadlock can continue indefinitely if the timing works out just right.</p>
+<p>Consider the following sequence of events:</p>
+<ul>
+<li>Proposer A performs the <code>Prepare</code>/<code>Promise</code> phase for ballot number 1.</li>
+<li>Before Proposer A manages to get its proposal accepted, Proposer B performs a <code>Prepare</code>/<code>Promise</code> phase for ballot number 2.</li>
+<li>When Proposer A finally sends its <code>Accept</code> with ballot number 1, the acceptors reject it because they have already promised ballot number 2.</li>
+<li>Proposer A reacts by immediately sending a <code>Prepare</code> with a higher ballot number (3), before Proposer B can send its <code>Accept</code> message.</li>
+<li>Proposer B’s subsequent <code>Accept</code> is rejected, and the process repeats.</li>
+</ul>
+<p>With unlucky timing – more common over long-distance connections where the time between sending a message and getting a response is long – this deadlock can continue for many rounds.</p>
+<h3 id="multi-paxos">Multi-Paxos</h3>
+<p>Reaching consensus on a single static value is not particularly useful on its own. Clustered systems such as the bank account service want to agree on a particular state (account balances) that changes over time. We use Paxos to agree on each operation, treated as a state machine transition.</p>
+<p>Multi-Paxos is, in effect, a sequence of simple Paxos instances (slots), each numbered sequentially. Each state transition is given a “slot number”, and each member of the cluster executes transitions in strict numeric order. To change the cluster’s state (to process a transfer operation, for example), we try to achieve consensus on that operation in the next slot. In concrete terms, this means adding a slot number to each message, with all of the protocol state tracked on a per-slot basis.</p>
+<p>Running Paxos for every slot, with its minimum of two round trips, would be too slow. Multi-Paxos optimizes by using the same set of ballot numbers for all slots, and performing the <code>Prepare</code>/<code>Promise</code> phase for all slots at once.</p>
+<h3 id="paxos-made-pretty-hard">Paxos Made Pretty Hard</h3>
+<p>Implementing Multi-Paxos in practical software is notoriously difficult, spawning a number of papers mocking Lamport’s “Paxos Made Simple” with titles like “Paxos Made Practical”.</p>
+<p>First, the multiple-proposers problem described above can become problematic in a busy environment, as each cluster member attempts to get its state machine operation decided in each slot. The fix is to elect a “leader” which is responsible for submitting ballots for each slot. All other cluster nodes then send new operations to the leader for execution. Thus, in normal operation with only one leader, ballot conflicts do not occur.</p>
+<p>The <code>Prepare</code>/<code>Promise</code> phase can function as a kind of leader election: whichever cluster member owns the most recently promised ballot number is considered the leader. The leader is then free to execute the <code>Accept</code>/<code>Accepted</code> phase directly without repeating the first phase. As we’ll see below, leader elections are actually quite complex.</p>
+<p>Although simple Paxos guarantees that the cluster will not reach conflicting decisions, it cannot guarantee that any decision will be made. For example, if the initial <code>Prepare</code> message is lost and doesn’t reach the acceptors, then the proposer will wait for a <code>Promise</code> message that will never arrive. Fixing this requires carefully orchestrated re-transmissions: enough to eventually make progress, but not so many that the cluster buries itself in a packet storm.</p>
+<p>Another problem is the dissemination of decisions. A simple broadcast of a <code>Decision</code> message can take care of this for the normal case. If the message is lost, though, a node can remain permanently ignorant of the decision and unable to apply state machine transitions for later slots. So an implementation needs some mechanism for sharing information about decided proposals.</p>
+<p>Our use of a distributed state machine presents another interesting challenge: start-up. When a new node starts, it needs to catch up on the existing state of the cluster. Although it can do so by catching up on decisions for all slots since the first, in a mature cluster this may involve millions of slots. Furthermore, we need some way to initialize a new cluster.</p>
+<p>But enough talk of theory and algorithms – let’s have a look at the code.</p>
+<h2 id="introducing-cluster">Introducing Cluster</h2>
+<p>The <em>Cluster</em> library in this chapter implements a simple form of Multi-Paxos. It is designed as a library to provide a consensus service to a larger application.</p>
+<p>Users of this library will depend on its correctness, so it’s important to structure the code so that we can see – and test – its correspondence to the specification. Complex protocols can exhibit complex failures, so we will build support for reproducing and debugging rare failures.</p>
+<p>The implementation in this chapter is proof-of-concept code: enough to demonstrate that the core concept is practical, but without all of the mundane equipment required for use in production. The code is structured so that such equipment can be added later with minimal changes to the core implementation.</p>
+<p>Let’s get started.</p>
+<h3 id="types-and-constants">Types and Constants</h3>
+<p>Cluster’s protocol uses fifteen different message types, each defined as a Python <a href="https://docs.python.org/3/library/collections.html"><code>namedtuple</code></a>.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>    Accepted <span class="op">=</span> namedtuple(<span class="st">&#39;Accepted&#39;</span>, [<span class="st">&#39;slot&#39;</span>, <span class="st">&#39;ballot_num&#39;</span>])</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    Accept <span class="op">=</span> namedtuple(<span class="st">&#39;Accept&#39;</span>, [<span class="st">&#39;slot&#39;</span>, <span class="st">&#39;ballot_num&#39;</span>, <span class="st">&#39;proposal&#39;</span>])</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    Decision <span class="op">=</span> namedtuple(<span class="st">&#39;Decision&#39;</span>, [<span class="st">&#39;slot&#39;</span>, <span class="st">&#39;proposal&#39;</span>])</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    Invoked <span class="op">=</span> namedtuple(<span class="st">&#39;Invoked&#39;</span>, [<span class="st">&#39;client_id&#39;</span>, <span class="st">&#39;output&#39;</span>])</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    Invoke <span class="op">=</span> namedtuple(<span class="st">&#39;Invoke&#39;</span>, [<span class="st">&#39;caller&#39;</span>, <span class="st">&#39;client_id&#39;</span>, <span class="st">&#39;input_value&#39;</span>])</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    Join <span class="op">=</span> namedtuple(<span class="st">&#39;Join&#39;</span>, [])</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    Active <span class="op">=</span> namedtuple(<span class="st">&#39;Active&#39;</span>, [])</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    Prepare <span class="op">=</span> namedtuple(<span class="st">&#39;Prepare&#39;</span>, [<span class="st">&#39;ballot_num&#39;</span>])</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    Promise <span class="op">=</span> namedtuple(<span class="st">&#39;Promise&#39;</span>, [<span class="st">&#39;ballot_num&#39;</span>, <span class="st">&#39;accepted_proposals&#39;</span>])</span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>    Propose <span class="op">=</span> namedtuple(<span class="st">&#39;Propose&#39;</span>, [<span class="st">&#39;slot&#39;</span>, <span class="st">&#39;proposal&#39;</span>])</span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>    Welcome <span class="op">=</span> namedtuple(<span class="st">&#39;Welcome&#39;</span>, [<span class="st">&#39;state&#39;</span>, <span class="st">&#39;slot&#39;</span>, <span class="st">&#39;decisions&#39;</span>])</span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>    Decided <span class="op">=</span> namedtuple(<span class="st">&#39;Decided&#39;</span>, [<span class="st">&#39;slot&#39;</span>])</span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    Preempted <span class="op">=</span> namedtuple(<span class="st">&#39;Preempted&#39;</span>, [<span class="st">&#39;slot&#39;</span>, <span class="st">&#39;preempted_by&#39;</span>])</span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>    Adopted <span class="op">=</span> namedtuple(<span class="st">&#39;Adopted&#39;</span>, [<span class="st">&#39;ballot_num&#39;</span>, <span class="st">&#39;accepted_proposals&#39;</span>])</span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>    Accepting <span class="op">=</span> namedtuple(<span class="st">&#39;Accepting&#39;</span>, [<span class="st">&#39;leader&#39;</span>])</span></code></pre></div>
+<p>Using named tuples to describe each message type keeps the code clean and helps avoid some simple errors. The named tuple constructor will raise an exception if it is not given exactly the right attributes, making typos obvious. The tuples format themselves nicely in log messages, and as an added bonus don’t use as much memory as a dictionary.</p>
+<p>Creating a message reads naturally:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>    msg <span class="op">=</span> Accepted(slot<span class="op">=</span><span class="dv">10</span>, ballot_num<span class="op">=</span><span class="dv">30</span>)</span></code></pre></div>
+<p>And the fields of that message are accessible with a minimum of extra typing:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>    got_ballot_num <span class="op">=</span> msg.ballot_num</span></code></pre></div>
+<p>We’ll see what these messages mean in the sections that follow. The code also introduces a few constants, most of which define timeouts for various messages:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>    JOIN_RETRANSMIT <span class="op">=</span> <span class="fl">0.7</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    CATCHUP_INTERVAL <span class="op">=</span> <span class="fl">0.6</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>    ACCEPT_RETRANSMIT <span class="op">=</span> <span class="fl">1.0</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>    PREPARE_RETRANSMIT <span class="op">=</span> <span class="fl">1.0</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>    INVOKE_RETRANSMIT <span class="op">=</span> <span class="fl">0.5</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>    LEADER_TIMEOUT <span class="op">=</span> <span class="fl">1.0</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>    NULL_BALLOT <span class="op">=</span> Ballot(<span class="op">-</span><span class="dv">1</span>, <span class="op">-</span><span class="dv">1</span>)  <span class="co"># sorts before all real ballots</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a>    NOOP_PROPOSAL <span class="op">=</span> Proposal(<span class="va">None</span>, <span class="va">None</span>, <span class="va">None</span>)  <span class="co"># no-op to fill otherwise empty slots</span></span></code></pre></div>
+<p>Finally, Cluster uses two data types named to correspond to the protocol description:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>    Proposal <span class="op">=</span> namedtuple(<span class="st">&#39;Proposal&#39;</span>, [<span class="st">&#39;caller&#39;</span>, <span class="st">&#39;client_id&#39;</span>, <span class="st">&#39;input&#39;</span>])</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    Ballot <span class="op">=</span> namedtuple(<span class="st">&#39;Ballot&#39;</span>, [<span class="st">&#39;n&#39;</span>, <span class="st">&#39;leader&#39;</span>])</span></code></pre></div>
+<h3 id="component-model">Component Model</h3>
+<p>Humans are limited by what we can hold in our active memory. We can’t reason about the entire Cluster implementation at once – it’s just too much, so it’s easy to miss details. For similar reasons, large monolithic codebases are hard to test: test cases must manipulate many moving pieces and are brittle, failing on almost any change to the code.</p>
+<p>To encourage testability and keep the code readable, we break Cluster down into a handful of classes corresponding to the roles described in the protocol. Each is a subclass of <code>Role</code>.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Role(<span class="bu">object</span>):</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, node):</span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node <span class="op">=</span> node</span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node.register(<span class="va">self</span>)</span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.running <span class="op">=</span> <span class="va">True</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.logger <span class="op">=</span> node.logger.getChild(<span class="bu">type</span>(<span class="va">self</span>).<span class="va">__name__</span>)</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> set_timer(<span class="va">self</span>, seconds, callback):</span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="va">self</span>.node.network.set_timer(<span class="va">self</span>.node.address, seconds,</span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>                                           <span class="kw">lambda</span>: <span class="va">self</span>.running <span class="kw">and</span> callback())</span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> stop(<span class="va">self</span>):</span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.running <span class="op">=</span> <span class="va">False</span></span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node.unregister(<span class="va">self</span>)</span></code></pre></div>
+<p>The roles that a cluster node has are glued together by the <code>Node</code> class, which represents a single node on the network. Roles are added to and removed from the node as execution proceeds. Messages that arrive on the node are relayed to all active roles, calling a method named after the message type with a <code>do_</code> prefix. These <code>do_</code> methods receive the message’s attributes as keyword arguments for easy access. The <code>Node</code> class also provides a <code>send</code> method as a convenience, using <code>functools.partial</code> to supply some arguments to the same methods of the <code>Network</code> class.</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Node(<span class="bu">object</span>):</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    unique_ids <span class="op">=</span> itertools.count()</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, network, address):</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.network <span class="op">=</span> network</span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.address <span class="op">=</span> address <span class="kw">or</span> <span class="st">&#39;N</span><span class="sc">%d</span><span class="st">&#39;</span> <span class="op">%</span> <span class="va">self</span>.unique_ids.<span class="bu">next</span>()</span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.logger <span class="op">=</span> SimTimeLogger(</span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>            logging.getLogger(<span class="va">self</span>.address), {<span class="st">&#39;network&#39;</span>: <span class="va">self</span>.network})</span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.logger.info(<span class="st">&#39;starting&#39;</span>)</span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.roles <span class="op">=</span> []</span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.send <span class="op">=</span> functools.partial(<span class="va">self</span>.network.send, <span class="va">self</span>)</span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> register(<span class="va">self</span>, roles):</span>
+<span id="cb9-15"><a href="#cb9-15" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.roles.append(roles)</span>
+<span id="cb9-16"><a href="#cb9-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-17"><a href="#cb9-17" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> unregister(<span class="va">self</span>, roles):</span>
+<span id="cb9-18"><a href="#cb9-18" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.roles.remove(roles)</span>
+<span id="cb9-19"><a href="#cb9-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-20"><a href="#cb9-20" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> receive(<span class="va">self</span>, sender, message):</span>
+<span id="cb9-21"><a href="#cb9-21" aria-hidden="true" tabindex="-1"></a>        handler_name <span class="op">=</span> <span class="st">&#39;do_</span><span class="sc">%s</span><span class="st">&#39;</span> <span class="op">%</span> <span class="bu">type</span>(message).<span class="va">__name__</span></span>
+<span id="cb9-22"><a href="#cb9-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-23"><a href="#cb9-23" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> comp <span class="kw">in</span> <span class="va">self</span>.roles[:]:</span>
+<span id="cb9-24"><a href="#cb9-24" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="kw">not</span> <span class="bu">hasattr</span>(comp, handler_name):</span>
+<span id="cb9-25"><a href="#cb9-25" aria-hidden="true" tabindex="-1"></a>                <span class="cf">continue</span></span>
+<span id="cb9-26"><a href="#cb9-26" aria-hidden="true" tabindex="-1"></a>            comp.logger.debug(<span class="st">&quot;received </span><span class="sc">%s</span><span class="st"> from </span><span class="sc">%s</span><span class="st">&quot;</span>, message, sender)</span>
+<span id="cb9-27"><a href="#cb9-27" aria-hidden="true" tabindex="-1"></a>            fn <span class="op">=</span> <span class="bu">getattr</span>(comp, handler_name)</span>
+<span id="cb9-28"><a href="#cb9-28" aria-hidden="true" tabindex="-1"></a>            fn(sender<span class="op">=</span>sender, <span class="op">**</span>message._asdict())</span>
+<span id="cb9-29"><a href="#cb9-29" aria-hidden="true" tabindex="-1"></a>    </span></code></pre></div>
+<h3 id="application-interface">Application Interface</h3>
+<p>The application creates and starts a <code>Member</code> object on each cluster member, providing an application-specific state machine and a list of peers. The member object adds a bootstrap role to the node if it is joining an existing cluster, or seed if it is creating a new cluster. It then runs the protocol (via <code>Network.run</code>) in a separate thread.</p>
+<p>The application interacts with the cluster through the <code>invoke</code> method, which kicks off a proposal for a state transition. Once that proposal is decided and the state machine runs, <code>invoke</code> returns the machine’s output. The method uses a simple synchronized <code>Queue</code> to wait for the result from the protocol thread.</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Member(<span class="bu">object</span>):</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, state_machine, network, peers, seed<span class="op">=</span><span class="va">None</span>,</span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>                 seed_cls<span class="op">=</span>Seed, bootstrap_cls<span class="op">=</span>Bootstrap):</span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.network <span class="op">=</span> network</span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node <span class="op">=</span> network.new_node()</span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> seed <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.startup_role <span class="op">=</span> seed_cls(<span class="va">self</span>.node, initial_state<span class="op">=</span>seed, peers<span class="op">=</span>peers,</span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a>                                      execute_fn<span class="op">=</span>state_machine)</span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.startup_role <span class="op">=</span> bootstrap_cls(<span class="va">self</span>.node,</span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a>                                      execute_fn<span class="op">=</span>state_machine, peers<span class="op">=</span>peers)</span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.requester <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> start(<span class="va">self</span>):</span>
+<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.startup_role.start()</span>
+<span id="cb10-17"><a href="#cb10-17" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.thread <span class="op">=</span> threading.Thread(target<span class="op">=</span><span class="va">self</span>.network.run)</span>
+<span id="cb10-18"><a href="#cb10-18" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.thread.start()</span>
+<span id="cb10-19"><a href="#cb10-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-20"><a href="#cb10-20" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> invoke(<span class="va">self</span>, input_value, request_cls<span class="op">=</span>Requester):</span>
+<span id="cb10-21"><a href="#cb10-21" aria-hidden="true" tabindex="-1"></a>        <span class="cf">assert</span> <span class="va">self</span>.requester <span class="kw">is</span> <span class="va">None</span></span>
+<span id="cb10-22"><a href="#cb10-22" aria-hidden="true" tabindex="-1"></a>        q <span class="op">=</span> Queue.Queue()</span>
+<span id="cb10-23"><a href="#cb10-23" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.requester <span class="op">=</span> request_cls(<span class="va">self</span>.node, input_value, q.put)</span>
+<span id="cb10-24"><a href="#cb10-24" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.requester.start()</span>
+<span id="cb10-25"><a href="#cb10-25" aria-hidden="true" tabindex="-1"></a>        output <span class="op">=</span> q.get()</span>
+<span id="cb10-26"><a href="#cb10-26" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.requester <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb10-27"><a href="#cb10-27" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> output</span></code></pre></div>
+<h3 id="role-classes">Role Classes</h3>
+<p>Let’s look at each of the role classes in the library one by one.</p>
+<h4 id="acceptor">Acceptor</h4>
+<p>The <code>Acceptor</code> implements the acceptor role in the protocol, so it must store the ballot number representing its most recent promise, along with the set of accepted proposals for each slot. It then responds to <code>Prepare</code> and <code>Accept</code> messages according to the protocol. The result is a short class that is easy to compare to the protocol.</p>
+<p>For acceptors, Multi-Paxos looks a lot like Simple Paxos, with the addition of slot numbers to the messages.</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Acceptor(Role):</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, node):</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(Acceptor, <span class="va">self</span>).<span class="fu">__init__</span>(node)</span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.ballot_num <span class="op">=</span> NULL_BALLOT</span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.accepted_proposals <span class="op">=</span> {}  <span class="co"># {slot: (ballot_num, proposal)}</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Prepare(<span class="va">self</span>, sender, ballot_num):</span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> ballot_num <span class="op">&gt;</span> <span class="va">self</span>.ballot_num:</span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.ballot_num <span class="op">=</span> ballot_num</span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>            <span class="co"># we&#39;ve heard from a scout, so it might be the next leader</span></span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.node.send([<span class="va">self</span>.node.address], Accepting(leader<span class="op">=</span>sender))</span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-14"><a href="#cb11-14" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node.send([sender], Promise(</span>
+<span id="cb11-15"><a href="#cb11-15" aria-hidden="true" tabindex="-1"></a>            ballot_num<span class="op">=</span><span class="va">self</span>.ballot_num, </span>
+<span id="cb11-16"><a href="#cb11-16" aria-hidden="true" tabindex="-1"></a>            accepted_proposals<span class="op">=</span><span class="va">self</span>.accepted_proposals</span>
+<span id="cb11-17"><a href="#cb11-17" aria-hidden="true" tabindex="-1"></a>        ))</span>
+<span id="cb11-18"><a href="#cb11-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-19"><a href="#cb11-19" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Accept(<span class="va">self</span>, sender, ballot_num, slot, proposal):</span>
+<span id="cb11-20"><a href="#cb11-20" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> ballot_num <span class="op">&gt;=</span> <span class="va">self</span>.ballot_num:</span>
+<span id="cb11-21"><a href="#cb11-21" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.ballot_num <span class="op">=</span> ballot_num</span>
+<span id="cb11-22"><a href="#cb11-22" aria-hidden="true" tabindex="-1"></a>            acc <span class="op">=</span> <span class="va">self</span>.accepted_proposals</span>
+<span id="cb11-23"><a href="#cb11-23" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> slot <span class="kw">not</span> <span class="kw">in</span> acc <span class="kw">or</span> acc[slot][<span class="dv">0</span>] <span class="op">&lt;</span> ballot_num:</span>
+<span id="cb11-24"><a href="#cb11-24" aria-hidden="true" tabindex="-1"></a>                acc[slot] <span class="op">=</span> (ballot_num, proposal)</span>
+<span id="cb11-25"><a href="#cb11-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-26"><a href="#cb11-26" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node.send([sender], Accepted(</span>
+<span id="cb11-27"><a href="#cb11-27" aria-hidden="true" tabindex="-1"></a>            slot<span class="op">=</span>slot, ballot_num<span class="op">=</span><span class="va">self</span>.ballot_num))</span></code></pre></div>
+<h4 id="replica">Replica</h4>
+<p><a name="sec.cluster.replica"> </a></p>
+<p>The <code>Replica</code> class is the most complicated role class, as it has a few closely related responsibilities:</p>
+<ul>
+<li>Making new proposals;</li>
+<li>Invoking the local state machine when proposals are decided;</li>
+<li>Tracking the current leader; and</li>
+<li>Adding newly started nodes to the cluster.</li>
+</ul>
+<p>The replica creates new proposals in response to <code>Invoke</code> messages from clients, selecting what it believes to be an unused slot and sending a <code>Propose</code> message to the current leader (<a href="#figure-3.2">Figure 3.2</a>.) Furthermore, if the consensus for the selected slot is for a different proposal, the replica must re-propose with a new slot.</p>
+<div class="center figure">
+<a name="figure-3.2"></a><img src="cluster-images/replica.png" alt="Figure 3.2 - Replica Role Control Flow" title="Figure 3.2 - Replica Role Control Flow" />
+</div>
+<p class="center figcaption">
+<small>Figure 3.2 - Replica Role Control Flow</small>
+</p>
+<p><code>Decision</code> messages represent slots on which the cluster has come to consensus. Here, replicas store the new decision, then run the state machine until it reaches an undecided slot. Replicas distinguish <em>decided</em> slots, on which the cluster has agreed, from <em>committed</em> slots, which the local state machine has processed. When slots are decided out of order, the committed proposals may lag behind, waiting for the next slot to be decided. When a slot is committed, each replica sends an <code>Invoked</code> message back to the requester with the result of the operation.</p>
+<p>In some circumstances, it’s possible for a slot to have no active proposals and no decision. The state machine is required to execute slots one by one, so the cluster must reach a consensus on something to fill the slot. To protect against this possibility, replicas make a “no-op” proposal whenever they catch up on a slot. If such a proposal is eventually decided, then the state machine does nothing for that slot.</p>
+<p>Likewise, it’s possible for the same proposal to be decided twice. The replica skips invoking the state machine for any such duplicate proposals, performing no transition for that slot.</p>
+<p>Replicas need to know which node is the active leader in order to send <code>Propose</code> messages to it. There is a surprising amount of subtlety required to get this right, as we’ll see later. Each replica tracks the active leader using three sources of information.</p>
+<p>When the leader role becomes active, it sends an <code>Adopted</code> message to the replica on the same node (<a href="#figure-3.3">Figure 3.3</a>.)</p>
+<div class="center figure">
+<a name="figure-3.3"></a><img src="cluster-images/adopted.png" alt="Figure 3.3 - Adopted" title="Figure 3.3 - Adopted" />
+</div>
+<p class="center figcaption">
+<small>Figure 3.3 - Adopted</small>
+</p>
+<p>When the acceptor role sends a <code>Promise</code> to a new leader, it sends an <code>Accepting</code> message to its local replica (<a href="#figure-3.4">Figure 3.4</a>.)</p>
+<div class="center figure">
+<a name="figure-3.4"></a><img src="cluster-images/accepting.png" alt="Figure 3.4 - Accepting" title="Figure 3.4 - Accepting" />
+</div>
+<p class="center figcaption">
+<small>Figure 3.4 - Accepting</small>
+</p>
+<p>The active leader sends <code>Active</code> messages as a heartbeat (<a href="#figure-3.5">Figure 3.5</a>.) If no such message arrives before the <code>LEADER_TIMEOUT</code> expires, the replica assumes the leader is dead and moves on to the next leader. In this case, it’s important that all replicas choose the <em>same</em> new leader, which we accomplish by sorting the members and selecting the next one in the list.</p>
+<div class="center figure">
+<a name="figure-3.5"></a><img src="cluster-images/active.png" alt="Figure 3.5 - Active" title="Figure 3.5 - Active" />
+</div>
+<p class="center figcaption">
+<small>Figure 3.5 - Active</small>
+</p>
+<p>Finally, when a node joins the network, the bootstrap role sends a <code>Join</code> message (<a href="#figure-3.6">Figure 3.6</a>.) The replica responds with a <code>Welcome</code> message containing its most recent state, allowing the new node to come up to speed quickly.</p>
+<div class="center figure">
+<a name="figure-3.6"></a><img src="cluster-images/bootstrap.png" alt="Figure 3.6 - Bootstrap" title="Figure 3.6 - Bootstrap" />
+</div>
+<p class="center figcaption">
+<small>Figure 3.6 - Bootstrap</small>
+</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Replica(Role):</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, node, execute_fn, state, slot, decisions, peers):</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(Replica, <span class="va">self</span>).<span class="fu">__init__</span>(node)</span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.execute_fn <span class="op">=</span> execute_fn</span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.state <span class="op">=</span> state</span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.slot <span class="op">=</span> slot</span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.decisions <span class="op">=</span> decisions</span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.peers <span class="op">=</span> peers</span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.proposals <span class="op">=</span> {}</span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a>        <span class="co"># next slot num for a proposal (may lead slot)</span></span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.next_slot <span class="op">=</span> slot</span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.latest_leader <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb12-14"><a href="#cb12-14" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.latest_leader_timeout <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb12-15"><a href="#cb12-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-16"><a href="#cb12-16" aria-hidden="true" tabindex="-1"></a>    <span class="co"># making proposals</span></span>
+<span id="cb12-17"><a href="#cb12-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-18"><a href="#cb12-18" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Invoke(<span class="va">self</span>, sender, caller, client_id, input_value):</span>
+<span id="cb12-19"><a href="#cb12-19" aria-hidden="true" tabindex="-1"></a>        proposal <span class="op">=</span> Proposal(caller, client_id, input_value)</span>
+<span id="cb12-20"><a href="#cb12-20" aria-hidden="true" tabindex="-1"></a>        slot <span class="op">=</span> <span class="bu">next</span>((s <span class="cf">for</span> s, p <span class="kw">in</span> <span class="va">self</span>.proposals.iteritems() <span class="cf">if</span> p <span class="op">==</span> proposal), <span class="va">None</span>)</span>
+<span id="cb12-21"><a href="#cb12-21" aria-hidden="true" tabindex="-1"></a>        <span class="co"># propose, or re-propose if this proposal already has a slot</span></span>
+<span id="cb12-22"><a href="#cb12-22" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.propose(proposal, slot)</span>
+<span id="cb12-23"><a href="#cb12-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-24"><a href="#cb12-24" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> propose(<span class="va">self</span>, proposal, slot<span class="op">=</span><span class="va">None</span>):</span>
+<span id="cb12-25"><a href="#cb12-25" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot;Send (or resend, if slot is specified) a proposal to the leader&quot;&quot;&quot;</span></span>
+<span id="cb12-26"><a href="#cb12-26" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">not</span> slot:</span>
+<span id="cb12-27"><a href="#cb12-27" aria-hidden="true" tabindex="-1"></a>            slot, <span class="va">self</span>.next_slot <span class="op">=</span> <span class="va">self</span>.next_slot, <span class="va">self</span>.next_slot <span class="op">+</span> <span class="dv">1</span></span>
+<span id="cb12-28"><a href="#cb12-28" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.proposals[slot] <span class="op">=</span> proposal</span>
+<span id="cb12-29"><a href="#cb12-29" aria-hidden="true" tabindex="-1"></a>        <span class="co"># find a leader we think is working - either the latest we know of, or</span></span>
+<span id="cb12-30"><a href="#cb12-30" aria-hidden="true" tabindex="-1"></a>        <span class="co"># ourselves (which may trigger a scout to make us the leader)</span></span>
+<span id="cb12-31"><a href="#cb12-31" aria-hidden="true" tabindex="-1"></a>        leader <span class="op">=</span> <span class="va">self</span>.latest_leader <span class="kw">or</span> <span class="va">self</span>.node.address</span>
+<span id="cb12-32"><a href="#cb12-32" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.logger.info(</span>
+<span id="cb12-33"><a href="#cb12-33" aria-hidden="true" tabindex="-1"></a>            <span class="st">&quot;proposing </span><span class="sc">%s</span><span class="st"> at slot </span><span class="sc">%d</span><span class="st"> to leader </span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> (proposal, slot, leader))</span>
+<span id="cb12-34"><a href="#cb12-34" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node.send([leader], Propose(slot<span class="op">=</span>slot, proposal<span class="op">=</span>proposal))</span>
+<span id="cb12-35"><a href="#cb12-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-36"><a href="#cb12-36" aria-hidden="true" tabindex="-1"></a>    <span class="co"># handling decided proposals</span></span>
+<span id="cb12-37"><a href="#cb12-37" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-38"><a href="#cb12-38" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Decision(<span class="va">self</span>, sender, slot, proposal):</span>
+<span id="cb12-39"><a href="#cb12-39" aria-hidden="true" tabindex="-1"></a>        <span class="cf">assert</span> <span class="kw">not</span> <span class="va">self</span>.decisions.get(<span class="va">self</span>.slot, <span class="va">None</span>), <span class="op">\</span></span>
+<span id="cb12-40"><a href="#cb12-40" aria-hidden="true" tabindex="-1"></a>                <span class="co">&quot;next slot to commit is already decided&quot;</span></span>
+<span id="cb12-41"><a href="#cb12-41" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> slot <span class="kw">in</span> <span class="va">self</span>.decisions:</span>
+<span id="cb12-42"><a href="#cb12-42" aria-hidden="true" tabindex="-1"></a>            <span class="cf">assert</span> <span class="va">self</span>.decisions[slot] <span class="op">==</span> proposal, <span class="op">\</span></span>
+<span id="cb12-43"><a href="#cb12-43" aria-hidden="true" tabindex="-1"></a>                <span class="co">&quot;slot %d already decided with %r!&quot;</span> <span class="op">%</span> (slot, <span class="va">self</span>.decisions[slot])</span>
+<span id="cb12-44"><a href="#cb12-44" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span></span>
+<span id="cb12-45"><a href="#cb12-45" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.decisions[slot] <span class="op">=</span> proposal</span>
+<span id="cb12-46"><a href="#cb12-46" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.next_slot <span class="op">=</span> <span class="bu">max</span>(<span class="va">self</span>.next_slot, slot <span class="op">+</span> <span class="dv">1</span>)</span>
+<span id="cb12-47"><a href="#cb12-47" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-48"><a href="#cb12-48" aria-hidden="true" tabindex="-1"></a>        <span class="co"># re-propose our proposal in a new slot if it lost its slot and wasn&#39;t a no-op</span></span>
+<span id="cb12-49"><a href="#cb12-49" aria-hidden="true" tabindex="-1"></a>        our_proposal <span class="op">=</span> <span class="va">self</span>.proposals.get(slot)</span>
+<span id="cb12-50"><a href="#cb12-50" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> (our_proposal <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span> <span class="kw">and</span> </span>
+<span id="cb12-51"><a href="#cb12-51" aria-hidden="true" tabindex="-1"></a>            our_proposal <span class="op">!=</span> proposal <span class="kw">and</span> our_proposal.caller):</span>
+<span id="cb12-52"><a href="#cb12-52" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.propose(our_proposal)</span>
+<span id="cb12-53"><a href="#cb12-53" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-54"><a href="#cb12-54" aria-hidden="true" tabindex="-1"></a>        <span class="co"># execute any pending, decided proposals</span></span>
+<span id="cb12-55"><a href="#cb12-55" aria-hidden="true" tabindex="-1"></a>        <span class="cf">while</span> <span class="va">True</span>:</span>
+<span id="cb12-56"><a href="#cb12-56" aria-hidden="true" tabindex="-1"></a>            commit_proposal <span class="op">=</span> <span class="va">self</span>.decisions.get(<span class="va">self</span>.slot)</span>
+<span id="cb12-57"><a href="#cb12-57" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="kw">not</span> commit_proposal:</span>
+<span id="cb12-58"><a href="#cb12-58" aria-hidden="true" tabindex="-1"></a>                <span class="cf">break</span>  <span class="co"># not decided yet</span></span>
+<span id="cb12-59"><a href="#cb12-59" aria-hidden="true" tabindex="-1"></a>            commit_slot, <span class="va">self</span>.slot <span class="op">=</span> <span class="va">self</span>.slot, <span class="va">self</span>.slot <span class="op">+</span> <span class="dv">1</span></span>
+<span id="cb12-60"><a href="#cb12-60" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-61"><a href="#cb12-61" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.commit(commit_slot, commit_proposal)</span>
+<span id="cb12-62"><a href="#cb12-62" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-63"><a href="#cb12-63" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> commit(<span class="va">self</span>, slot, proposal):</span>
+<span id="cb12-64"><a href="#cb12-64" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot;Actually commit a proposal that is decided and in sequence&quot;&quot;&quot;</span></span>
+<span id="cb12-65"><a href="#cb12-65" aria-hidden="true" tabindex="-1"></a>        decided_proposals <span class="op">=</span> [p <span class="cf">for</span> s, p <span class="kw">in</span> <span class="va">self</span>.decisions.iteritems() <span class="cf">if</span> s <span class="op">&lt;</span> slot]</span>
+<span id="cb12-66"><a href="#cb12-66" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> proposal <span class="kw">in</span> decided_proposals:</span>
+<span id="cb12-67"><a href="#cb12-67" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.logger.info(</span>
+<span id="cb12-68"><a href="#cb12-68" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;not committing duplicate proposal </span><span class="sc">%r</span><span class="st">, slot </span><span class="sc">%d</span><span class="st">&quot;</span>, proposal, slot)</span>
+<span id="cb12-69"><a href="#cb12-69" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span>  <span class="co"># duplicate</span></span>
+<span id="cb12-70"><a href="#cb12-70" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-71"><a href="#cb12-71" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.logger.info(<span class="st">&quot;committing </span><span class="sc">%r</span><span class="st"> at slot </span><span class="sc">%d</span><span class="st">&quot;</span> <span class="op">%</span> (proposal, slot))</span>
+<span id="cb12-72"><a href="#cb12-72" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> proposal.caller <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb12-73"><a href="#cb12-73" aria-hidden="true" tabindex="-1"></a>            <span class="co"># perform a client operation</span></span>
+<span id="cb12-74"><a href="#cb12-74" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.state, output <span class="op">=</span> <span class="va">self</span>.execute_fn(<span class="va">self</span>.state, proposal.<span class="bu">input</span>)</span>
+<span id="cb12-75"><a href="#cb12-75" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.node.send([proposal.caller], </span>
+<span id="cb12-76"><a href="#cb12-76" aria-hidden="true" tabindex="-1"></a>                Invoked(client_id<span class="op">=</span>proposal.client_id, output<span class="op">=</span>output))</span>
+<span id="cb12-77"><a href="#cb12-77" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-78"><a href="#cb12-78" aria-hidden="true" tabindex="-1"></a>    <span class="co"># tracking the leader</span></span>
+<span id="cb12-79"><a href="#cb12-79" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-80"><a href="#cb12-80" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Adopted(<span class="va">self</span>, sender, ballot_num, accepted_proposals):</span>
+<span id="cb12-81"><a href="#cb12-81" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.latest_leader <span class="op">=</span> <span class="va">self</span>.node.address</span>
+<span id="cb12-82"><a href="#cb12-82" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.leader_alive()</span>
+<span id="cb12-83"><a href="#cb12-83" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-84"><a href="#cb12-84" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Accepting(<span class="va">self</span>, sender, leader):</span>
+<span id="cb12-85"><a href="#cb12-85" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.latest_leader <span class="op">=</span> leader</span>
+<span id="cb12-86"><a href="#cb12-86" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.leader_alive()</span>
+<span id="cb12-87"><a href="#cb12-87" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-88"><a href="#cb12-88" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Active(<span class="va">self</span>, sender):</span>
+<span id="cb12-89"><a href="#cb12-89" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> sender <span class="op">!=</span> <span class="va">self</span>.latest_leader:</span>
+<span id="cb12-90"><a href="#cb12-90" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span></span>
+<span id="cb12-91"><a href="#cb12-91" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.leader_alive()</span>
+<span id="cb12-92"><a href="#cb12-92" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-93"><a href="#cb12-93" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> leader_alive(<span class="va">self</span>):</span>
+<span id="cb12-94"><a href="#cb12-94" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="va">self</span>.latest_leader_timeout:</span>
+<span id="cb12-95"><a href="#cb12-95" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.latest_leader_timeout.cancel()</span>
+<span id="cb12-96"><a href="#cb12-96" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-97"><a href="#cb12-97" aria-hidden="true" tabindex="-1"></a>        <span class="kw">def</span> reset_leader():</span>
+<span id="cb12-98"><a href="#cb12-98" aria-hidden="true" tabindex="-1"></a>            idx <span class="op">=</span> <span class="va">self</span>.peers.index(<span class="va">self</span>.latest_leader)</span>
+<span id="cb12-99"><a href="#cb12-99" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.latest_leader <span class="op">=</span> <span class="va">self</span>.peers[(idx <span class="op">+</span> <span class="dv">1</span>) <span class="op">%</span> <span class="bu">len</span>(<span class="va">self</span>.peers)]</span>
+<span id="cb12-100"><a href="#cb12-100" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.logger.debug(<span class="st">&quot;leader timed out; tring the next one, </span><span class="sc">%s</span><span class="st">&quot;</span>, </span>
+<span id="cb12-101"><a href="#cb12-101" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.latest_leader)</span>
+<span id="cb12-102"><a href="#cb12-102" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.latest_leader_timeout <span class="op">=</span> <span class="va">self</span>.set_timer(LEADER_TIMEOUT, reset_leader)</span>
+<span id="cb12-103"><a href="#cb12-103" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-104"><a href="#cb12-104" aria-hidden="true" tabindex="-1"></a>    <span class="co"># adding new cluster members</span></span>
+<span id="cb12-105"><a href="#cb12-105" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-106"><a href="#cb12-106" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Join(<span class="va">self</span>, sender):</span>
+<span id="cb12-107"><a href="#cb12-107" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> sender <span class="kw">in</span> <span class="va">self</span>.peers:</span>
+<span id="cb12-108"><a href="#cb12-108" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.node.send([sender], Welcome(</span>
+<span id="cb12-109"><a href="#cb12-109" aria-hidden="true" tabindex="-1"></a>                state<span class="op">=</span><span class="va">self</span>.state, slot<span class="op">=</span><span class="va">self</span>.slot, decisions<span class="op">=</span><span class="va">self</span>.decisions))</span></code></pre></div>
+<h4 id="leader-scout-and-commander">Leader, Scout, and Commander</h4>
+<p>The leader’s primary task is to take <code>Propose</code> messages requesting new ballots and produce decisions. A leader is “active” when it has successfully carried out the <code>Prepare</code>/<code>Promise</code> portion of the protocol. An active leader can immediately send an <code>Accept</code> message in response to a <code>Propose</code>.</p>
+<p>In keeping with the class-per-role model, the leader delegates to the scout and commander roles to carry out each portion of the protocol.</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Leader(Role):</span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, node, peers, commander_cls<span class="op">=</span>Commander, scout_cls<span class="op">=</span>Scout):</span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(Leader, <span class="va">self</span>).<span class="fu">__init__</span>(node)</span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.ballot_num <span class="op">=</span> Ballot(<span class="dv">0</span>, node.address)</span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.active <span class="op">=</span> <span class="va">False</span></span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.proposals <span class="op">=</span> {}</span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.commander_cls <span class="op">=</span> commander_cls</span>
+<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scout_cls <span class="op">=</span> scout_cls</span>
+<span id="cb13-10"><a href="#cb13-10" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scouting <span class="op">=</span> <span class="va">False</span></span>
+<span id="cb13-11"><a href="#cb13-11" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.peers <span class="op">=</span> peers</span>
+<span id="cb13-12"><a href="#cb13-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-13"><a href="#cb13-13" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> start(<span class="va">self</span>):</span>
+<span id="cb13-14"><a href="#cb13-14" aria-hidden="true" tabindex="-1"></a>        <span class="co"># reminder others we&#39;re active before LEADER_TIMEOUT expires</span></span>
+<span id="cb13-15"><a href="#cb13-15" aria-hidden="true" tabindex="-1"></a>        <span class="kw">def</span> active():</span>
+<span id="cb13-16"><a href="#cb13-16" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="va">self</span>.active:</span>
+<span id="cb13-17"><a href="#cb13-17" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.node.send(<span class="va">self</span>.peers, Active())</span>
+<span id="cb13-18"><a href="#cb13-18" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.set_timer(LEADER_TIMEOUT <span class="op">/</span> <span class="fl">2.0</span>, active)</span>
+<span id="cb13-19"><a href="#cb13-19" aria-hidden="true" tabindex="-1"></a>        active()</span>
+<span id="cb13-20"><a href="#cb13-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-21"><a href="#cb13-21" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> spawn_scout(<span class="va">self</span>):</span>
+<span id="cb13-22"><a href="#cb13-22" aria-hidden="true" tabindex="-1"></a>        <span class="cf">assert</span> <span class="kw">not</span> <span class="va">self</span>.scouting</span>
+<span id="cb13-23"><a href="#cb13-23" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scouting <span class="op">=</span> <span class="va">True</span></span>
+<span id="cb13-24"><a href="#cb13-24" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scout_cls(<span class="va">self</span>.node, <span class="va">self</span>.ballot_num, <span class="va">self</span>.peers).start()</span>
+<span id="cb13-25"><a href="#cb13-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-26"><a href="#cb13-26" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Adopted(<span class="va">self</span>, sender, ballot_num, accepted_proposals):</span>
+<span id="cb13-27"><a href="#cb13-27" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scouting <span class="op">=</span> <span class="va">False</span></span>
+<span id="cb13-28"><a href="#cb13-28" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.proposals.update(accepted_proposals)</span>
+<span id="cb13-29"><a href="#cb13-29" aria-hidden="true" tabindex="-1"></a>        <span class="co"># note that we don&#39;t re-spawn commanders here; if there are undecided</span></span>
+<span id="cb13-30"><a href="#cb13-30" aria-hidden="true" tabindex="-1"></a>        <span class="co"># proposals, the replicas will re-propose</span></span>
+<span id="cb13-31"><a href="#cb13-31" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.logger.info(<span class="st">&quot;leader becoming active&quot;</span>)</span>
+<span id="cb13-32"><a href="#cb13-32" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.active <span class="op">=</span> <span class="va">True</span></span>
+<span id="cb13-33"><a href="#cb13-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-34"><a href="#cb13-34" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> spawn_commander(<span class="va">self</span>, ballot_num, slot):</span>
+<span id="cb13-35"><a href="#cb13-35" aria-hidden="true" tabindex="-1"></a>        proposal <span class="op">=</span> <span class="va">self</span>.proposals[slot]</span>
+<span id="cb13-36"><a href="#cb13-36" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.commander_cls(<span class="va">self</span>.node, ballot_num, slot, proposal, <span class="va">self</span>.peers).start()</span>
+<span id="cb13-37"><a href="#cb13-37" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-38"><a href="#cb13-38" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Preempted(<span class="va">self</span>, sender, slot, preempted_by):</span>
+<span id="cb13-39"><a href="#cb13-39" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">not</span> slot:  <span class="co"># from the scout</span></span>
+<span id="cb13-40"><a href="#cb13-40" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.scouting <span class="op">=</span> <span class="va">False</span></span>
+<span id="cb13-41"><a href="#cb13-41" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.logger.info(<span class="st">&quot;leader preempted by </span><span class="sc">%s</span><span class="st">&quot;</span>, preempted_by.leader)</span>
+<span id="cb13-42"><a href="#cb13-42" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.active <span class="op">=</span> <span class="va">False</span></span>
+<span id="cb13-43"><a href="#cb13-43" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.ballot_num <span class="op">=</span> Ballot((preempted_by <span class="kw">or</span> <span class="va">self</span>.ballot_num).n <span class="op">+</span> <span class="dv">1</span>, </span>
+<span id="cb13-44"><a href="#cb13-44" aria-hidden="true" tabindex="-1"></a>                                 <span class="va">self</span>.ballot_num.leader)</span>
+<span id="cb13-45"><a href="#cb13-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-46"><a href="#cb13-46" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Propose(<span class="va">self</span>, sender, slot, proposal):</span>
+<span id="cb13-47"><a href="#cb13-47" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> slot <span class="kw">not</span> <span class="kw">in</span> <span class="va">self</span>.proposals:</span>
+<span id="cb13-48"><a href="#cb13-48" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="va">self</span>.active:</span>
+<span id="cb13-49"><a href="#cb13-49" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.proposals[slot] <span class="op">=</span> proposal</span>
+<span id="cb13-50"><a href="#cb13-50" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.logger.info(<span class="st">&quot;spawning commander for slot </span><span class="sc">%d</span><span class="st">&quot;</span> <span class="op">%</span> (slot,))</span>
+<span id="cb13-51"><a href="#cb13-51" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.spawn_commander(<span class="va">self</span>.ballot_num, slot)</span>
+<span id="cb13-52"><a href="#cb13-52" aria-hidden="true" tabindex="-1"></a>            <span class="cf">else</span>:</span>
+<span id="cb13-53"><a href="#cb13-53" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> <span class="kw">not</span> <span class="va">self</span>.scouting:</span>
+<span id="cb13-54"><a href="#cb13-54" aria-hidden="true" tabindex="-1"></a>                    <span class="va">self</span>.logger.info(<span class="st">&quot;got PROPOSE when not active - scouting&quot;</span>)</span>
+<span id="cb13-55"><a href="#cb13-55" aria-hidden="true" tabindex="-1"></a>                    <span class="va">self</span>.spawn_scout()</span>
+<span id="cb13-56"><a href="#cb13-56" aria-hidden="true" tabindex="-1"></a>                <span class="cf">else</span>:</span>
+<span id="cb13-57"><a href="#cb13-57" aria-hidden="true" tabindex="-1"></a>                    <span class="va">self</span>.logger.info(<span class="st">&quot;got PROPOSE while scouting; ignored&quot;</span>)</span>
+<span id="cb13-58"><a href="#cb13-58" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb13-59"><a href="#cb13-59" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.logger.info(<span class="st">&quot;got PROPOSE for a slot already being proposed&quot;</span>)</span></code></pre></div>
+<p>The leader creates a scout role when it wants to become active, in response to receiving a <code>Propose</code> when it is inactive (<a href="#figure-3.7">Figure 3.7</a>.) The scout sends (and re-sends, if necessary) a <code>Prepare</code> message, and collects <code>Promise</code> responses until it has heard from a majority of its peers or until it has been preempted. It communicates back to the leader with <code>Adopted</code> or <code>Preempted</code>, respectively. </p>
+<div class="center figure">
+<a name="figure-3.7"></a><img src="cluster-images/leaderscout.png" alt="Figure 3.7 - Scout" title="Figure 3.7 - Scout" />
+</div>
+<p class="center figcaption">
+<small>Figure 3.7 - Scout</small>
+</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Scout(Role):</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, node, ballot_num, peers):</span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(Scout, <span class="va">self</span>).<span class="fu">__init__</span>(node)</span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.ballot_num <span class="op">=</span> ballot_num</span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.accepted_proposals <span class="op">=</span> {}</span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.acceptors <span class="op">=</span> <span class="bu">set</span>([])</span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.peers <span class="op">=</span> peers</span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.quorum <span class="op">=</span> <span class="bu">len</span>(peers) <span class="op">/</span> <span class="dv">2</span> <span class="op">+</span> <span class="dv">1</span></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.retransmit_timer <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> start(<span class="va">self</span>):</span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.logger.info(<span class="st">&quot;scout starting&quot;</span>)</span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.send_prepare()</span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-16"><a href="#cb14-16" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> send_prepare(<span class="va">self</span>):</span>
+<span id="cb14-17"><a href="#cb14-17" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node.send(<span class="va">self</span>.peers, Prepare(ballot_num<span class="op">=</span><span class="va">self</span>.ballot_num))</span>
+<span id="cb14-18"><a href="#cb14-18" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.retransmit_timer <span class="op">=</span> <span class="va">self</span>.set_timer(PREPARE_RETRANSMIT, <span class="va">self</span>.send_prepare)</span>
+<span id="cb14-19"><a href="#cb14-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-20"><a href="#cb14-20" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> update_accepted(<span class="va">self</span>, accepted_proposals):</span>
+<span id="cb14-21"><a href="#cb14-21" aria-hidden="true" tabindex="-1"></a>        acc <span class="op">=</span> <span class="va">self</span>.accepted_proposals</span>
+<span id="cb14-22"><a href="#cb14-22" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> slot, (ballot_num, proposal) <span class="kw">in</span> accepted_proposals.iteritems():</span>
+<span id="cb14-23"><a href="#cb14-23" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> slot <span class="kw">not</span> <span class="kw">in</span> acc <span class="kw">or</span> acc[slot][<span class="dv">0</span>] <span class="op">&lt;</span> ballot_num:</span>
+<span id="cb14-24"><a href="#cb14-24" aria-hidden="true" tabindex="-1"></a>                acc[slot] <span class="op">=</span> (ballot_num, proposal)</span>
+<span id="cb14-25"><a href="#cb14-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-26"><a href="#cb14-26" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Promise(<span class="va">self</span>, sender, ballot_num, accepted_proposals):</span>
+<span id="cb14-27"><a href="#cb14-27" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> ballot_num <span class="op">==</span> <span class="va">self</span>.ballot_num:</span>
+<span id="cb14-28"><a href="#cb14-28" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.logger.info(<span class="st">&quot;got matching promise; need </span><span class="sc">%d</span><span class="st">&quot;</span> <span class="op">%</span> <span class="va">self</span>.quorum)</span>
+<span id="cb14-29"><a href="#cb14-29" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.update_accepted(accepted_proposals)</span>
+<span id="cb14-30"><a href="#cb14-30" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.acceptors.add(sender)</span>
+<span id="cb14-31"><a href="#cb14-31" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="bu">len</span>(<span class="va">self</span>.acceptors) <span class="op">&gt;=</span> <span class="va">self</span>.quorum:</span>
+<span id="cb14-32"><a href="#cb14-32" aria-hidden="true" tabindex="-1"></a>                <span class="co"># strip the ballot numbers from self.accepted_proposals, now that it</span></span>
+<span id="cb14-33"><a href="#cb14-33" aria-hidden="true" tabindex="-1"></a>                <span class="co"># represents a majority</span></span>
+<span id="cb14-34"><a href="#cb14-34" aria-hidden="true" tabindex="-1"></a>                accepted_proposals <span class="op">=</span> <span class="op">\</span> </span>
+<span id="cb14-35"><a href="#cb14-35" aria-hidden="true" tabindex="-1"></a>                    <span class="bu">dict</span>((s, p) <span class="cf">for</span> s, (b, p) <span class="kw">in</span> <span class="va">self</span>.accepted_proposals.iteritems())</span>
+<span id="cb14-36"><a href="#cb14-36" aria-hidden="true" tabindex="-1"></a>                <span class="co"># We&#39;re adopted; note that this does *not* mean that no other</span></span>
+<span id="cb14-37"><a href="#cb14-37" aria-hidden="true" tabindex="-1"></a>                <span class="co"># leader is active.  # Any such conflicts will be handled by the</span></span>
+<span id="cb14-38"><a href="#cb14-38" aria-hidden="true" tabindex="-1"></a>                <span class="co"># commanders.</span></span>
+<span id="cb14-39"><a href="#cb14-39" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.node.send([<span class="va">self</span>.node.address],</span>
+<span id="cb14-40"><a href="#cb14-40" aria-hidden="true" tabindex="-1"></a>                    Adopted(ballot_num<span class="op">=</span>ballot_num, </span>
+<span id="cb14-41"><a href="#cb14-41" aria-hidden="true" tabindex="-1"></a>                            accepted_proposals<span class="op">=</span>accepted_proposals))</span>
+<span id="cb14-42"><a href="#cb14-42" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.stop()</span>
+<span id="cb14-43"><a href="#cb14-43" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb14-44"><a href="#cb14-44" aria-hidden="true" tabindex="-1"></a>            <span class="co"># this acceptor has promised another leader a higher ballot number,</span></span>
+<span id="cb14-45"><a href="#cb14-45" aria-hidden="true" tabindex="-1"></a>            <span class="co"># so we&#39;ve lost</span></span>
+<span id="cb14-46"><a href="#cb14-46" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.node.send([<span class="va">self</span>.node.address], </span>
+<span id="cb14-47"><a href="#cb14-47" aria-hidden="true" tabindex="-1"></a>                Preempted(slot<span class="op">=</span><span class="va">None</span>, preempted_by<span class="op">=</span>ballot_num))</span>
+<span id="cb14-48"><a href="#cb14-48" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.stop()</span></code></pre></div>
+<p>The leader creates a commander role for each slot where it has an active proposal (<a href="#figure-3.8">Figure 3.8</a>.) Like a scout, a commander sends and re-sends <code>Accept</code> messages and waits for a majority of acceptors to reply with <code>Accepted</code>, or for news of its preemption. When a proposal is accepted, the commander broadcasts a <code>Decision</code> message to all nodes. It responds to the leader with <code>Decided</code> or <code>Preempted</code>.</p>
+<div class="center figure">
+<a name="figure-3.8"></a><img src="cluster-images/leadercommander.png" alt="Figure 3.8 - Commander" title="Figure 3.8 - Commander" />
+</div>
+<p class="center figcaption">
+<small>Figure 3.8 - Commander</small>
+</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Commander(Role):</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, node, ballot_num, slot, proposal, peers):</span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(Commander, <span class="va">self</span>).<span class="fu">__init__</span>(node)</span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.ballot_num <span class="op">=</span> ballot_num</span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.slot <span class="op">=</span> slot</span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.proposal <span class="op">=</span> proposal</span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.acceptors <span class="op">=</span> <span class="bu">set</span>([])</span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.peers <span class="op">=</span> peers</span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.quorum <span class="op">=</span> <span class="bu">len</span>(peers) <span class="op">/</span> <span class="dv">2</span> <span class="op">+</span> <span class="dv">1</span></span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> start(<span class="va">self</span>):</span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node.send(<span class="bu">set</span>(<span class="va">self</span>.peers) <span class="op">-</span> <span class="va">self</span>.acceptors, Accept(</span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a>            slot<span class="op">=</span><span class="va">self</span>.slot, ballot_num<span class="op">=</span><span class="va">self</span>.ballot_num, proposal<span class="op">=</span><span class="va">self</span>.proposal))</span>
+<span id="cb15-15"><a href="#cb15-15" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.set_timer(ACCEPT_RETRANSMIT, <span class="va">self</span>.start)</span>
+<span id="cb15-16"><a href="#cb15-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-17"><a href="#cb15-17" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> finished(<span class="va">self</span>, ballot_num, preempted):</span>
+<span id="cb15-18"><a href="#cb15-18" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> preempted:</span>
+<span id="cb15-19"><a href="#cb15-19" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.node.send([<span class="va">self</span>.node.address], </span>
+<span id="cb15-20"><a href="#cb15-20" aria-hidden="true" tabindex="-1"></a>                           Preempted(slot<span class="op">=</span><span class="va">self</span>.slot, preempted_by<span class="op">=</span>ballot_num))</span>
+<span id="cb15-21"><a href="#cb15-21" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb15-22"><a href="#cb15-22" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.node.send([<span class="va">self</span>.node.address], </span>
+<span id="cb15-23"><a href="#cb15-23" aria-hidden="true" tabindex="-1"></a>                           Decided(slot<span class="op">=</span><span class="va">self</span>.slot))</span>
+<span id="cb15-24"><a href="#cb15-24" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.stop()</span>
+<span id="cb15-25"><a href="#cb15-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-26"><a href="#cb15-26" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Accepted(<span class="va">self</span>, sender, slot, ballot_num):</span>
+<span id="cb15-27"><a href="#cb15-27" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> slot <span class="op">!=</span> <span class="va">self</span>.slot:</span>
+<span id="cb15-28"><a href="#cb15-28" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span></span>
+<span id="cb15-29"><a href="#cb15-29" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> ballot_num <span class="op">==</span> <span class="va">self</span>.ballot_num:</span>
+<span id="cb15-30"><a href="#cb15-30" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.acceptors.add(sender)</span>
+<span id="cb15-31"><a href="#cb15-31" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="bu">len</span>(<span class="va">self</span>.acceptors) <span class="op">&lt;</span> <span class="va">self</span>.quorum:</span>
+<span id="cb15-32"><a href="#cb15-32" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span></span>
+<span id="cb15-33"><a href="#cb15-33" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.node.send(<span class="va">self</span>.peers, Decision(</span>
+<span id="cb15-34"><a href="#cb15-34" aria-hidden="true" tabindex="-1"></a>                           slot<span class="op">=</span><span class="va">self</span>.slot, proposal<span class="op">=</span><span class="va">self</span>.proposal))</span>
+<span id="cb15-35"><a href="#cb15-35" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.finished(ballot_num, <span class="va">False</span>)</span>
+<span id="cb15-36"><a href="#cb15-36" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb15-37"><a href="#cb15-37" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.finished(ballot_num, <span class="va">True</span>)</span></code></pre></div>
+<p>As an aside, a surprisingly subtle bug appeared here during development. At the time, the network simulator introduced packet loss even on messages within a node. When <em>all</em> <code>Decision</code> messages were lost, the protocol could not proceed. The replica continued to re-transmit <code>Propose</code> messages, but the leader ignored them as it already had a proposal for that slot. The replica’s catch-up process could not find the result, as no replica had heard of the decision. The solution was to ensure that local messages are always delivered, as is the case for real network stacks.</p>
+<h4 id="bootstrap">Bootstrap</h4>
+<p>When a node joins the cluster, it must determine the current cluster state before it can participate. The bootstrap role handles this by sending <code>Join</code> messages to each peer in turn until it receives a <code>Welcome</code>. Bootstrap’s communication diagram is shown above in <a href="#sec.cluster.replica">Replica</a>.</p>
+<p>An early version of the implementation started each node with a full set of roles (replica, leader, and acceptor), each of which began in a “startup” phase, waiting for information from the <code>Welcome</code> message. This spread the initialization logic around every role, requiring separate testing of each one. The final design has the bootstrap role adding each of the other roles to the node once startup is complete, passing the initial state to their constructors.</p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Bootstrap(Role):</span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, node, peers, execute_fn,</span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>                 replica_cls<span class="op">=</span>Replica, acceptor_cls<span class="op">=</span>Acceptor, leader_cls<span class="op">=</span>Leader,</span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>                 commander_cls<span class="op">=</span>Commander, scout_cls<span class="op">=</span>Scout):</span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(Bootstrap, <span class="va">self</span>).<span class="fu">__init__</span>(node)</span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.execute_fn <span class="op">=</span> execute_fn</span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.peers <span class="op">=</span> peers</span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.peers_cycle <span class="op">=</span> itertools.cycle(peers)</span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.replica_cls <span class="op">=</span> replica_cls</span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.acceptor_cls <span class="op">=</span> acceptor_cls</span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.leader_cls <span class="op">=</span> leader_cls</span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.commander_cls <span class="op">=</span> commander_cls</span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scout_cls <span class="op">=</span> scout_cls</span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> start(<span class="va">self</span>):</span>
+<span id="cb16-17"><a href="#cb16-17" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.join()</span>
+<span id="cb16-18"><a href="#cb16-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-19"><a href="#cb16-19" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> join(<span class="va">self</span>):</span>
+<span id="cb16-20"><a href="#cb16-20" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node.send([<span class="bu">next</span>(<span class="va">self</span>.peers_cycle)], Join())</span>
+<span id="cb16-21"><a href="#cb16-21" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.set_timer(JOIN_RETRANSMIT, <span class="va">self</span>.join)</span>
+<span id="cb16-22"><a href="#cb16-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-23"><a href="#cb16-23" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Welcome(<span class="va">self</span>, sender, state, slot, decisions):</span>
+<span id="cb16-24"><a href="#cb16-24" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.acceptor_cls(<span class="va">self</span>.node)</span>
+<span id="cb16-25"><a href="#cb16-25" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.replica_cls(<span class="va">self</span>.node, execute_fn<span class="op">=</span><span class="va">self</span>.execute_fn, peers<span class="op">=</span><span class="va">self</span>.peers,</span>
+<span id="cb16-26"><a href="#cb16-26" aria-hidden="true" tabindex="-1"></a>                         state<span class="op">=</span>state, slot<span class="op">=</span>slot, decisions<span class="op">=</span>decisions)</span>
+<span id="cb16-27"><a href="#cb16-27" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.leader_cls(<span class="va">self</span>.node, peers<span class="op">=</span><span class="va">self</span>.peers, commander_cls<span class="op">=</span><span class="va">self</span>.commander_cls,</span>
+<span id="cb16-28"><a href="#cb16-28" aria-hidden="true" tabindex="-1"></a>                        scout_cls<span class="op">=</span><span class="va">self</span>.scout_cls).start()</span>
+<span id="cb16-29"><a href="#cb16-29" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.stop()</span></code></pre></div>
+<h4 id="seed">Seed</h4>
+<p>In normal operation, when a node joins the cluster, it expects to find the cluster already running, with at least one node willing to respond to a <code>Join</code> message. But how does the cluster get started? One option is for the bootstrap role to determine, after attempting to contact every other node, that it is the first in the cluster. But this has two problems. First, for a large cluster it means a long wait while each <code>Join</code> times out. More importantly, in the event of a network partition, a new node might be unable to contact any others and start a new cluster.</p>
+<p>Network partitions are the most challenging failure case for clustered applications. In a network partition, all cluster members remain alive, but communication fails between some members. For example, if the network link joining a cluster with nodes in Berlin and Taipei fails, the network is partitioned. If both parts of a cluster continue to operate during a partition, then re-joining the parts after the network link is restored can be challenging. In the Multi-Paxos case, the healed network would be hosting two clusters with different decisions for the same slot numbers.</p>
+<p>To avoid this outcome, creating a new cluster is a user-specified operation. Exactly one node in the cluster runs the seed role, with the others running bootstrap as usual. The seed waits until it has received <code>Join</code> messages from a majority of its peers, then sends a <code>Welcome</code> with an initial state for the state machine and an empty set of decisions. The seed role then stops itself and starts a bootstrap role to join the newly-seeded cluster.</p>
+<p>Seed emulates the <code>Join</code>/<code>Welcome</code> part of the bootstrap/replica interaction, so its communication diagram is the same as for the replica role.</p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Seed(Role):</span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, node, initial_state, execute_fn, peers, </span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>                 bootstrap_cls<span class="op">=</span>Bootstrap):</span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(Seed, <span class="va">self</span>).<span class="fu">__init__</span>(node)</span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.initial_state <span class="op">=</span> initial_state</span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.execute_fn <span class="op">=</span> execute_fn</span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.peers <span class="op">=</span> peers</span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.bootstrap_cls <span class="op">=</span> bootstrap_cls</span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.seen_peers <span class="op">=</span> <span class="bu">set</span>([])</span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.exit_timer <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Join(<span class="va">self</span>, sender):</span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.seen_peers.add(sender)</span>
+<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="bu">len</span>(<span class="va">self</span>.seen_peers) <span class="op">&lt;=</span> <span class="bu">len</span>(<span class="va">self</span>.peers) <span class="op">/</span> <span class="dv">2</span>:</span>
+<span id="cb17-16"><a href="#cb17-16" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span></span>
+<span id="cb17-17"><a href="#cb17-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-18"><a href="#cb17-18" aria-hidden="true" tabindex="-1"></a>        <span class="co"># cluster is ready - welcome everyone</span></span>
+<span id="cb17-19"><a href="#cb17-19" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node.send(<span class="bu">list</span>(<span class="va">self</span>.seen_peers), Welcome(</span>
+<span id="cb17-20"><a href="#cb17-20" aria-hidden="true" tabindex="-1"></a>            state<span class="op">=</span><span class="va">self</span>.initial_state, slot<span class="op">=</span><span class="dv">1</span>, decisions<span class="op">=</span>{}))</span>
+<span id="cb17-21"><a href="#cb17-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-22"><a href="#cb17-22" aria-hidden="true" tabindex="-1"></a>        <span class="co"># stick around for long enough that we don&#39;t hear any new JOINs from</span></span>
+<span id="cb17-23"><a href="#cb17-23" aria-hidden="true" tabindex="-1"></a>        <span class="co"># the newly formed cluster</span></span>
+<span id="cb17-24"><a href="#cb17-24" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="va">self</span>.exit_timer:</span>
+<span id="cb17-25"><a href="#cb17-25" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.exit_timer.cancel()</span>
+<span id="cb17-26"><a href="#cb17-26" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.exit_timer <span class="op">=</span> <span class="va">self</span>.set_timer(JOIN_RETRANSMIT <span class="op">*</span> <span class="dv">2</span>, <span class="va">self</span>.finish)</span>
+<span id="cb17-27"><a href="#cb17-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-28"><a href="#cb17-28" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> finish(<span class="va">self</span>):</span>
+<span id="cb17-29"><a href="#cb17-29" aria-hidden="true" tabindex="-1"></a>        <span class="co"># bootstrap this node into the cluster we just seeded</span></span>
+<span id="cb17-30"><a href="#cb17-30" aria-hidden="true" tabindex="-1"></a>        bs <span class="op">=</span> <span class="va">self</span>.bootstrap_cls(<span class="va">self</span>.node, </span>
+<span id="cb17-31"><a href="#cb17-31" aria-hidden="true" tabindex="-1"></a>                                peers<span class="op">=</span><span class="va">self</span>.peers, execute_fn<span class="op">=</span><span class="va">self</span>.execute_fn)</span>
+<span id="cb17-32"><a href="#cb17-32" aria-hidden="true" tabindex="-1"></a>        bs.start()</span>
+<span id="cb17-33"><a href="#cb17-33" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.stop()</span></code></pre></div>
+<h4 id="requester">Requester</h4>
+<p>The requester role manages a request to the distributed state machine. The role class simply sends <code>Invoke</code> messages to the local replica until it receives a corresponding <code>Invoked</code>. See the “Replica” section, above, for this role’s communication diagram.</p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Requester(Role):</span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>    client_ids <span class="op">=</span> itertools.count(start<span class="op">=</span><span class="dv">100000</span>)</span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, node, n, callback):</span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(Requester, <span class="va">self</span>).<span class="fu">__init__</span>(node)</span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.client_id <span class="op">=</span> <span class="va">self</span>.client_ids.<span class="bu">next</span>()</span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.n <span class="op">=</span> n</span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.output <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.callback <span class="op">=</span> callback</span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> start(<span class="va">self</span>):</span>
+<span id="cb18-13"><a href="#cb18-13" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node.send([<span class="va">self</span>.node.address], </span>
+<span id="cb18-14"><a href="#cb18-14" aria-hidden="true" tabindex="-1"></a>                       Invoke(caller<span class="op">=</span><span class="va">self</span>.node.address, </span>
+<span id="cb18-15"><a href="#cb18-15" aria-hidden="true" tabindex="-1"></a>                              client_id<span class="op">=</span><span class="va">self</span>.client_id, input_value<span class="op">=</span><span class="va">self</span>.n))</span>
+<span id="cb18-16"><a href="#cb18-16" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.invoke_timer <span class="op">=</span> <span class="va">self</span>.set_timer(INVOKE_RETRANSMIT, <span class="va">self</span>.start)</span>
+<span id="cb18-17"><a href="#cb18-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-18"><a href="#cb18-18" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> do_Invoked(<span class="va">self</span>, sender, client_id, output):</span>
+<span id="cb18-19"><a href="#cb18-19" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> client_id <span class="op">!=</span> <span class="va">self</span>.client_id:</span>
+<span id="cb18-20"><a href="#cb18-20" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span></span>
+<span id="cb18-21"><a href="#cb18-21" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.logger.debug(<span class="st">&quot;received output </span><span class="sc">%r</span><span class="st">&quot;</span> <span class="op">%</span> (output,))</span>
+<span id="cb18-22"><a href="#cb18-22" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.invoke_timer.cancel()</span>
+<span id="cb18-23"><a href="#cb18-23" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.callback(output)</span>
+<span id="cb18-24"><a href="#cb18-24" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.stop()</span></code></pre></div>
+<h3 id="summary">Summary</h3>
+<p>To recap, cluster’s roles are:</p>
+<ul>
+<li>Acceptor – make promises and accept proposals</li>
+<li>Replica – manage the distributed state machine: submitting proposals, committing decisions, and responding to requesters</li>
+<li>Leader – lead rounds of the Multi-Paxos algorithm</li>
+<li>Scout – perform the <code>Prepare</code>/<code>Promise</code> portion of the Multi-Paxos algorithm for a leader</li>
+<li>Commander – perform the <code>Accept</code>/<code>Accepted</code> portion of the Multi-Paxos algorithm for a leader</li>
+<li>Bootstrap – introduce a new node to an existing cluster</li>
+<li>Seed – create a new cluster</li>
+<li>Requester – request a distributed state machine operation</li>
+</ul>
+<p>There is just one more piece of equipment required to make Cluster go: the network through which all of the nodes communicate.</p>
+<h2 id="network">Network</h2>
+<p>Any network protocol needs the ability to send and receive messages and a means of calling functions at a time in the future.</p>
+<p>The <code>Network</code> class provides a simple simulated network with these capabilities and also simulates packet loss and message propagation delays.</p>
+<p>Timers are handled using Python’s <code>heapq</code> module, allowing efficient selection of the next event. Setting a timer involves pushing a <code>Timer</code> object onto the heap. Since removing items from a heap is inefficient, cancelled timers are left in place but marked as cancelled.</p>
+<p>Message transmission uses the timer functionality to schedule a later delivery of the message at each node, using a random simulated delay. We again use <code>functools.partial</code> to set up a future call to the destination node’s <code>receive</code> method with appropriate arguments.</p>
+<p>Running the simulation just involves popping timers from the heap and executing them if they have not been cancelled and if the destination node is still active.</p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Timer(<span class="bu">object</span>):</span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, expires, address, callback):</span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.expires <span class="op">=</span> expires</span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.address <span class="op">=</span> address</span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.callback <span class="op">=</span> callback</span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.cancelled <span class="op">=</span> <span class="va">False</span></span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__cmp__</span>(<span class="va">self</span>, other):</span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="bu">cmp</span>(<span class="va">self</span>.expires, other.expires)</span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> cancel(<span class="va">self</span>):</span>
+<span id="cb19-13"><a href="#cb19-13" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.cancelled <span class="op">=</span> <span class="va">True</span></span>
+<span id="cb19-14"><a href="#cb19-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-15"><a href="#cb19-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-16"><a href="#cb19-16" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Network(<span class="bu">object</span>):</span>
+<span id="cb19-17"><a href="#cb19-17" aria-hidden="true" tabindex="-1"></a>    PROP_DELAY <span class="op">=</span> <span class="fl">0.03</span></span>
+<span id="cb19-18"><a href="#cb19-18" aria-hidden="true" tabindex="-1"></a>    PROP_JITTER <span class="op">=</span> <span class="fl">0.02</span></span>
+<span id="cb19-19"><a href="#cb19-19" aria-hidden="true" tabindex="-1"></a>    DROP_PROB <span class="op">=</span> <span class="fl">0.05</span></span>
+<span id="cb19-20"><a href="#cb19-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-21"><a href="#cb19-21" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, seed):</span>
+<span id="cb19-22"><a href="#cb19-22" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.nodes <span class="op">=</span> {}</span>
+<span id="cb19-23"><a href="#cb19-23" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.rnd <span class="op">=</span> random.Random(seed)</span>
+<span id="cb19-24"><a href="#cb19-24" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.timers <span class="op">=</span> []</span>
+<span id="cb19-25"><a href="#cb19-25" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.now <span class="op">=</span> <span class="fl">1000.0</span></span>
+<span id="cb19-26"><a href="#cb19-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-27"><a href="#cb19-27" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> new_node(<span class="va">self</span>, address<span class="op">=</span><span class="va">None</span>):</span>
+<span id="cb19-28"><a href="#cb19-28" aria-hidden="true" tabindex="-1"></a>        node <span class="op">=</span> Node(<span class="va">self</span>, address<span class="op">=</span>address)</span>
+<span id="cb19-29"><a href="#cb19-29" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.nodes[node.address] <span class="op">=</span> node</span>
+<span id="cb19-30"><a href="#cb19-30" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> node</span>
+<span id="cb19-31"><a href="#cb19-31" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-32"><a href="#cb19-32" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> run(<span class="va">self</span>):</span>
+<span id="cb19-33"><a href="#cb19-33" aria-hidden="true" tabindex="-1"></a>        <span class="cf">while</span> <span class="va">self</span>.timers:</span>
+<span id="cb19-34"><a href="#cb19-34" aria-hidden="true" tabindex="-1"></a>            next_timer <span class="op">=</span> <span class="va">self</span>.timers[<span class="dv">0</span>]</span>
+<span id="cb19-35"><a href="#cb19-35" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> next_timer.expires <span class="op">&gt;</span> <span class="va">self</span>.now:</span>
+<span id="cb19-36"><a href="#cb19-36" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.now <span class="op">=</span> next_timer.expires</span>
+<span id="cb19-37"><a href="#cb19-37" aria-hidden="true" tabindex="-1"></a>            heapq.heappop(<span class="va">self</span>.timers)</span>
+<span id="cb19-38"><a href="#cb19-38" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> next_timer.cancelled:</span>
+<span id="cb19-39"><a href="#cb19-39" aria-hidden="true" tabindex="-1"></a>                <span class="cf">continue</span></span>
+<span id="cb19-40"><a href="#cb19-40" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="kw">not</span> next_timer.address <span class="kw">or</span> next_timer.address <span class="kw">in</span> <span class="va">self</span>.nodes:</span>
+<span id="cb19-41"><a href="#cb19-41" aria-hidden="true" tabindex="-1"></a>                next_timer.callback()</span>
+<span id="cb19-42"><a href="#cb19-42" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-43"><a href="#cb19-43" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> stop(<span class="va">self</span>):</span>
+<span id="cb19-44"><a href="#cb19-44" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.timers <span class="op">=</span> []</span>
+<span id="cb19-45"><a href="#cb19-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-46"><a href="#cb19-46" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> set_timer(<span class="va">self</span>, address, seconds, callback):</span>
+<span id="cb19-47"><a href="#cb19-47" aria-hidden="true" tabindex="-1"></a>        timer <span class="op">=</span> Timer(<span class="va">self</span>.now <span class="op">+</span> seconds, address, callback)</span>
+<span id="cb19-48"><a href="#cb19-48" aria-hidden="true" tabindex="-1"></a>        heapq.heappush(<span class="va">self</span>.timers, timer)</span>
+<span id="cb19-49"><a href="#cb19-49" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> timer</span>
+<span id="cb19-50"><a href="#cb19-50" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-51"><a href="#cb19-51" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> send(<span class="va">self</span>, sender, destinations, message):</span>
+<span id="cb19-52"><a href="#cb19-52" aria-hidden="true" tabindex="-1"></a>        sender.logger.debug(<span class="st">&quot;sending </span><span class="sc">%s</span><span class="st"> to </span><span class="sc">%s</span><span class="st">&quot;</span>, message, destinations)</span>
+<span id="cb19-53"><a href="#cb19-53" aria-hidden="true" tabindex="-1"></a>        <span class="co"># avoid aliasing by making a closure containing distinct deep copy of</span></span>
+<span id="cb19-54"><a href="#cb19-54" aria-hidden="true" tabindex="-1"></a>        <span class="co"># message for each dest</span></span>
+<span id="cb19-55"><a href="#cb19-55" aria-hidden="true" tabindex="-1"></a>        <span class="kw">def</span> sendto(dest, message):</span>
+<span id="cb19-56"><a href="#cb19-56" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> dest <span class="op">==</span> sender.address:</span>
+<span id="cb19-57"><a href="#cb19-57" aria-hidden="true" tabindex="-1"></a>                <span class="co"># reliably deliver local messages with no delay</span></span>
+<span id="cb19-58"><a href="#cb19-58" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.set_timer(sender.address, <span class="dv">0</span>,  </span>
+<span id="cb19-59"><a href="#cb19-59" aria-hidden="true" tabindex="-1"></a>                               <span class="kw">lambda</span>: sender.receive(sender.address, message))</span>
+<span id="cb19-60"><a href="#cb19-60" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> <span class="va">self</span>.rnd.uniform(<span class="dv">0</span>, <span class="fl">1.0</span>) <span class="op">&gt;</span> <span class="va">self</span>.DROP_PROB:</span>
+<span id="cb19-61"><a href="#cb19-61" aria-hidden="true" tabindex="-1"></a>                delay <span class="op">=</span> <span class="va">self</span>.PROP_DELAY <span class="op">+</span> <span class="va">self</span>.rnd.uniform(<span class="op">-</span><span class="va">self</span>.PROP_JITTER, </span>
+<span id="cb19-62"><a href="#cb19-62" aria-hidden="true" tabindex="-1"></a>                                                           <span class="va">self</span>.PROP_JITTER)</span>
+<span id="cb19-63"><a href="#cb19-63" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.set_timer(dest, delay, </span>
+<span id="cb19-64"><a href="#cb19-64" aria-hidden="true" tabindex="-1"></a>                               functools.partial(<span class="va">self</span>.nodes[dest].receive, </span>
+<span id="cb19-65"><a href="#cb19-65" aria-hidden="true" tabindex="-1"></a>                                                 sender.address, message))</span>
+<span id="cb19-66"><a href="#cb19-66" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> dest <span class="kw">in</span> (d <span class="cf">for</span> d <span class="kw">in</span> destinations <span class="cf">if</span> d <span class="kw">in</span> <span class="va">self</span>.nodes):</span>
+<span id="cb19-67"><a href="#cb19-67" aria-hidden="true" tabindex="-1"></a>            sendto(dest, copy.deepcopy(message))</span></code></pre></div>
+<p>While it’s not included in this implementation, the component model allows us to swap in a real-world network implementation, communicating between actual servers on a real network, with no changes to the other components. Testing and debugging can take place using the simulated network, with production use of the library operating over real network hardware.</p>
+<h2 id="debugging-support">Debugging Support</h2>
+<p>When developing a complex system such as this, the bugs quickly transition from trivial, like a simple <code>NameError</code>, to obscure failures that only manifest after several minutes of (simulated) proocol operation. Chasing down bugs like this involves working backward from the point where the error became obvious. Interactive debuggers are useless here, as they can only step forward in time.</p>
+<p>The most important debugging feature in Cluster is a <em>deterministic</em> simulator. Unlike a real network, it will behave exactly the same way on every run, given the same seed for the random number generator. This means that we can add additional debugging checks or output to the code and re-run the simulation to see the same failure in more detail.</p>
+<p>Of course, much of that detail is in the messages exchanged by the nodes in the cluster, so those are automatically logged in their entirety. That logging includes the role class sending or receiving the message, as well as the simulated timestamp injected via the <code>SimTimeLogger</code> class.</p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> SimTimeLogger(logging.LoggerAdapter):</span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> process(<span class="va">self</span>, msg, kwargs):</span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="st">&quot;T=</span><span class="sc">%.3f</span><span class="st"> </span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> (<span class="va">self</span>.extra[<span class="st">&#39;network&#39;</span>].now, msg), kwargs</span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> getChild(<span class="va">self</span>, name):</span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="va">self</span>.__class__(<span class="va">self</span>.logger.getChild(name),</span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a>                              {<span class="st">&#39;network&#39;</span>: <span class="va">self</span>.extra[<span class="st">&#39;network&#39;</span>]})</span></code></pre></div>
+<p>A resilient protocol such as this one can often run for a long time after a bug has been triggered. For example, during development, a data aliasing error caused all replicas to share the same <code>decisions</code> dictionary. This meant that once a decision was handled on one node, all other nodes saw it as already decided. Even with this serious bug, the cluster produced correct results for several transactions before deadlocking.</p>
+<p>Assertions are an important tool to catch this sort of error early. Assertions should include any invariants from the algorithm design, but when the code doesn’t behave as we expect, asserting our expectations is a great way to see where things go astray.</p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a>    <span class="cf">assert</span> <span class="kw">not</span> <span class="va">self</span>.decisions.get(<span class="va">self</span>.slot, <span class="va">None</span>), <span class="op">\</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>            <span class="co">&quot;next slot to commit is already decided&quot;</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> slot <span class="kw">in</span> <span class="va">self</span>.decisions:</span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">assert</span> <span class="va">self</span>.decisions[slot] <span class="op">==</span> proposal, <span class="op">\</span></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>            <span class="co">&quot;slot %d already decided with %r!&quot;</span> <span class="op">%</span> (slot, <span class="va">self</span>.decisions[slot])</span></code></pre></div>
+<p>Identifying the right assumptions we make while reading code is a part of the art of debugging. In this code from <code>Replica.do_Decision</code>, the problem was that the <code>Decision</code> for the next slot to commit was being ignored because it was already in <code>self.decisions</code>. The underlying assumption being violated was that the next slot to be committed was not yet decided. Asserting this at the beginning of <code>do_Decision</code> identified the flaw and led quickly to the fix. Similarly, other bugs led to cases where different proposals were decided in the same slot – a serious error.</p>
+<p>Many other assertions were added during development of the protocol, but in the interests of space, only a few remain.</p>
+<h2 id="testing">Testing</h2>
+<p>Some time in the last ten years, coding without tests finally became as crazy as driving without a seatbelt. Code without tests is probably incorrect, and modifying code is risky without a way to see if its behavior has changed.</p>
+<p>Testing is most effective when the code is organized for testability. There are a few active schools of thought in this area, but the approach we’ve taken is to divide the code into small, minimally connected units that can be tested in isolation. This agrees nicely with the role model, where each role has a specific purpose and can operate in isolation from the others, resulting in a compact, self-sufficient class.</p>
+<p>Cluster is written to maximize that isolation: all communication between roles takes place via messages, with the exception of creating new roles. For the most part, then, roles can be tested by sending messages to them and observing their responses.</p>
+<h4 id="unit-testing">Unit Testing</h4>
+<p>The unit tests for Cluster are simple and short:</p>
+<div class="sourceCode" id="cb22"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Tests(utils.ComponentTestCase):</span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> test_propose_active(<span class="va">self</span>):</span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot;A PROPOSE received while active spawns a commander.&quot;&quot;&quot;</span></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.activate_leader()</span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.node.fake_message(Propose(slot<span class="op">=</span><span class="dv">10</span>, proposal<span class="op">=</span>PROPOSAL1))</span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.assertCommanderStarted(Ballot(<span class="dv">0</span>, <span class="st">&#39;F999&#39;</span>), <span class="dv">10</span>, PROPOSAL1)</span></code></pre></div>
+<p>This method tests a single behavior (commander spawning) of a single unit (the <code>Leader</code> class). It follows the well-known “arrange, act, assert” pattern: set up an active leader, send it a message, and check the result.</p>
+<h4 id="dependency-injection">Dependency Injection</h4>
+<p>We use a technique called “dependency injection” to handle creation of new roles. Each role class which adds other roles to the network takes a list of class objects as constructor arguments, defaulting to the actual classes. For example, the constructor for <code>Leader</code> looks like this:</p>
+<div class="sourceCode" id="cb23"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Leader(Role):</span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, node, peers, commander_cls<span class="op">=</span>Commander, scout_cls<span class="op">=</span>Scout):</span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>        <span class="bu">super</span>(Leader, <span class="va">self</span>).<span class="fu">__init__</span>(node)</span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.ballot_num <span class="op">=</span> Ballot(<span class="dv">0</span>, node.address)</span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.active <span class="op">=</span> <span class="va">False</span></span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.proposals <span class="op">=</span> {}</span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.commander_cls <span class="op">=</span> commander_cls</span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scout_cls <span class="op">=</span> scout_cls</span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scouting <span class="op">=</span> <span class="va">False</span></span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.peers <span class="op">=</span> peers</span></code></pre></div>
+<p>The <code>spawn_scout</code> method (and similarly, <code>spawn_commander</code>) creates the new role object with <code>self.scout_cls</code>:</p>
+<div class="sourceCode" id="cb24"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Leader(Role):</span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> spawn_scout(<span class="va">self</span>):</span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a>        <span class="cf">assert</span> <span class="kw">not</span> <span class="va">self</span>.scouting</span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scouting <span class="op">=</span> <span class="va">True</span></span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.scout_cls(<span class="va">self</span>.node, <span class="va">self</span>.ballot_num, <span class="va">self</span>.peers).start()</span></code></pre></div>
+<p>The magic of this technique is that, in testing, <code>Leader</code> can be given fake classes and thus tested separately from <code>Scout</code> and <code>Commander</code>.</p>
+<h4 id="interface-correctness">Interface Correctness</h4>
+<p>One pitfall of a focus on small units is that it does not test the interfaces between units. For example, unit tests for the acceptor role verify the format of the <code>accepted</code> attribute of the <code>Promise</code> message, and the unit tests for the scout role supply well-formatted values for the attribute. Neither test checks that those formats match.</p>
+<p>One approach to fixing this issue is to make the interfaces self-enforcing. In Cluster, the use of named tuples and keyword arguments avoids any disagreement over messages’ attributes. Because the only interaction between role classes is via messages, this covers a large part of the interface.</p>
+<p>For specific issues such as the format of <code>accepted_proposals</code>, both the real and test data can be verified using the same function, in this case <code>verifyPromiseAccepted</code>. The tests for the acceptor use this method to verify each returned <code>Promise</code>, and the tests for the scout use it to verify every fake <code>Promise</code>.</p>
+<h4 id="integration-testing">Integration Testing</h4>
+<p>The final bulwark against interface problems and design errors is integration testing. An integration test assembles multiple units together and tests their combined effect. In our case, that means building a network of several nodes, injecting some requests into it, and verifying the results. If there are any interface issues not discovered in unit testing, they should cause the integration tests to fail quickly.</p>
+<p>Because the protocol is intended to handle node failure gracefully, we test a few failure scenarios as well, including the untimely failure of the active leader.</p>
+<p>Integration tests are harder to write than unit tests, because they are less well-isolated. For Cluster, this is clearest in testing the failed leader, as any node could be the active leader. Even with a deterministic network, a change in one message alters the random number generator’s state and thus unpredictably changes later events. Rather than hard-coding the expected leader, the test code must dig into the internal state of each leader to find one that believes itself to be active.</p>
+<h4 id="fuzz-testing">Fuzz Testing</h4>
+<p>It’s very difficult to test resilient code: it is likely to be resilient to its own bugs, so integration tests may not detect even very serious bugs. It is also hard to imagine and construct tests for every possible failure mode.</p>
+<p>A common approach to this sort of problem is “fuzz testing”: running the code repeatedly with randomly changing inputs until something breaks. When something <em>does</em> break, all of the debugging support becomes critical: if the failure can’t be reproduced, and the logging information isn’t sufficient to find the bug, then you can’t fix it!</p>
+<p>I performed some manual fuzz testing of cluster during development, but a full fuzz-testing infrastructure is beyond the scope of this project.</p>
+<h2 id="power-struggles">Power Struggles</h2>
+<p>A cluster with many active leaders is a very noisy place, with scouts sending ever-increasing ballot numbers to acceptors, and no ballots being decided. A cluster with no active leader is quiet, but equally nonfunctional. Balancing the implementation so that a cluster almost always agrees on exactly one leader is remarkably difficult.</p>
+<p>It’s easy enough to avoid fighting leaders: when preempted, a leader just accepts its new inactive status. However, this easily leads to a case where there are no active leaders, so an inactive leader will try to become active every time it gets a <code>Propose</code> message.</p>
+<p>If the whole cluster doesn’t agree on which member is the active leader, there’s trouble: different replicas send <code>Propose</code> messages to different leaders, leading to battling scouts. So it’s important that leader elections be decided quickly, and that all cluster members find out about the result as quickly as possible.</p>
+<p>Cluster handles this by detecting a leader change as quickly as possible: when an acceptor sends a <code>Promise</code>, chances are good that the promised member will be the next leader. Failures are detected with a heartbeat protocol.</p>
+<h2 id="further-extensions">Further Extensions</h2>
+<p>Of course, there are plenty of ways we could extend and improve this implementation.</p>
+<h3 id="catching-up">Catching Up</h3>
+<p>In “pure” Multi-Paxos, nodes which fail to receive messages can be many slots behind the rest of the cluster. As long as the state of the distributed state machine is never accessed except via state machine transitions, this design is functional. To read from the state, the client requests a state-machine transition that does not actually alter the state, but which returns the desired value. This transition is executed cluster-wide, ensuring that it returns the same value everywhere, based on the state at the slot in which it is proposed.</p>
+<p>Even in the optimal case, this is slow, requiring several round trips just to read a value. If a distributed object store made such a request for every object access, its performance would be dismal. But when the node receiving the request is lagging behind, the request delay is much greater as that node must catch up to the rest of the cluster before making a successful proposal.</p>
+<p>A simple solution is to implement a gossip-style protocol, where each replica periodically contacts other replicas to share the highest slot it knows about and to request information on unknown slots. Then even when a <code>Decision</code> message was lost, the replica would quickly find out about the decision from one of its peers.</p>
+<h3 id="consistent-memory-usage">Consistent Memory Usage</h3>
+<p>A cluster-management library provides reliability in the presence of unreliable components. It shouldn’t add unreliability of its own. Unfortunately, Cluster will not run for long without failing due to ever-growing memory use and message size.</p>
+<p>In the protocol definition, acceptors and replicas form the “memory” of the protocol, so they need to remember everything. These classes never know when they will receive a request for an old slot, perhaps from a lagging replica or leader. To maintain correctness, then, they keep a list of every decision, ever, since the cluster was started. Worse, these decisions are transmitted between replicas in <code>Welcome</code> messages, making these messages enormous in a long-lived cluster.</p>
+<p>One technique to address this issue is to periodically “checkpoint” each node’s state, keeping information about some limited number of decisions on hand. Nodes which are so out of date that they have not committed all slots up to the checkpoint must “reset” themselves by leaving and re-joining the cluster.</p>
+<h4 id="persistent-storage">Persistent Storage</h4>
+<p>While it’s OK for a minority of cluster members to fail, it’s not OK for an acceptor to “forget” any of the values it has accepted or promises it has made.</p>
+<p>Unfortunately, this is exactly what happens when a cluster member fails and restarts: the newly initialized Acceptor instance has no record of the promises its predecessor made. The problem is that the newly-started instance takes the place of the old.</p>
+<p>There are two ways to solve this issue. The simpler solution involves writing acceptor state to disk and re-reading that state on startup. The more complex solution is to remove failed cluster members from the cluster, and require that new members be added to the cluster. This kind of dynamic adjustment of the cluster membership is called a “view change”.</p>
+<h4 id="view-changes">View Changes</h4>
+<p>Operations engineers need to be able to resize clusters to meet load and availability requirements. A simple test project might begin with a minimal cluster of three nodes, where any one can fail without impact. When that project goes “live”, though, the additional load will require a larger cluster.</p>
+<p>Cluster, as written, cannot change the set of peers in a cluster without restarting the entire cluster. Ideally, the cluster would be able to maintain a consensus about its membership, just as it does about state machine transitions. This means that the set of cluster members (the <em>view</em>) can be changed by special view-change proposals. But the Paxos algorithm depends on universal agreement about the members in the cluster, so we must define the view for each slot.</p>
+<p>Lamport addresses this challenge in the final paragraph of “Paxos Made Simple”:</p>
+<blockquote>
+<p>We can allow a leader to get <span class="math inline">\(\alpha\)</span> commands ahead by letting the set of servers that execute instance <span class="math inline">\(i+\alpha\)</span> of the consensus algorithm be specified by the state after execution of the <span class="math inline">\(i\)</span>th state machine command. (Lamport, 2001)</p>
+</blockquote>
+<p>The idea is that each instance of Paxos (slot) uses the view from <span class="math inline">\(\alpha\)</span> slots earlier. This allows the cluster to work on, at most, <span class="math inline">\(\alpha\)</span> slots at any one time, so a very small value of <span class="math inline">\(\alpha\)</span> limits concurrency, while a very large value of <span class="math inline">\(\alpha\)</span> makes view changes slow to take effect.</p>
+<p>In early drafts of this implementation (dutifully preserved in the git history!), I implemented support for view changes (using <span class="math inline">\(\alpha\)</span> in place of 3). This seemingly simple change introduced a great deal of complexity:</p>
+<ul>
+<li>tracking the view for each of the last <span class="math inline">\(\alpha\)</span> committed slots and correctly sharing this with new nodes,</li>
+<li>ignoring proposals for which no slot is available,</li>
+<li>detecting failed nodes,</li>
+<li>properly serializing multiple competing view changes, and</li>
+<li>communicating view information between the leader and replica.</li>
+</ul>
+<p>The result was far too large for this book! </p>
+<h2 id="references">References</h2>
+<p>In addition to the original Paxos paper and Lamport’s follow-up “Paxos Made Simple”<a href="#fn2" class="footnote-ref" id="fnref2" role="doc-noteref"><sup>2</sup></a>, our implementation added extensions that were informed by several other resources. The role names were taken from “Paxos Made Moderately Complex”<a href="#fn3" class="footnote-ref" id="fnref3" role="doc-noteref"><sup>3</sup></a>. “Paxos Made Live”<a href="#fn4" class="footnote-ref" id="fnref4" role="doc-noteref"><sup>4</sup></a> was helpful regarding snapshots in particular, and <a href="http://www.scs.stanford.edu/~dm/home/papers/paxos.pdf">“Paxos Made Practical”</a> described view changes (although not of the type described here.) Liskov’s “From Viewstamped Replication to Byzantine Fault Tolerance”<a href="#fn5" class="footnote-ref" id="fnref5" role="doc-noteref"><sup>5</sup></a> provided yet another perspective on view changes. Finally, a <a href="http://stackoverflow.com/questions/21353312/in-part-time-parliament-why-does-using-the-membership-from-decree-n-3-work-to">Stack Overflow discussion</a> was helpful in learning how members are added and removed from the system.</p>
+<section class="footnotes" role="doc-endnotes">
+<hr />
+<ol>
+<li id="fn1" role="doc-endnote"><p>L. Lamport, “The Part-Time Parliament,” ACM Transactions on Computer Systems, 16(2):133–169, May 1998.<a href="#fnref1" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn2" role="doc-endnote"><p>L. Lamport, “Paxos Made Simple,” ACM SIGACT News (Distributed Computing Column) 32, 4 (Whole Number 121, December 2001) 51-58.<a href="#fnref2" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn3" role="doc-endnote"><p>R. Van Renesse and D. Altinbuken, “Paxos Made Moderately Complex,” ACM Comp. Survey 47, 3, Article 42 (Feb. 2015)<a href="#fnref3" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn4" role="doc-endnote"><p>T. Chandra, R. Griesemer, and J. Redstone, “Paxos Made Live - An Engineering Perspective,” Proceedings of the twenty-sixth annual ACM symposium on Principles of distributed computing (PODC ’07). ACM, New York, NY, USA, 398-407.<a href="#fnref4" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn5" role="doc-endnote"><p>B. Liskov, “From Viewstamped Replication to Byzantine Fault Tolerance,” In <em>Replication</em>, Springer-Verlag, Berlin, Heidelberg 121-149 (2010)<a href="#fnref5" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+</ol>
+</section>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

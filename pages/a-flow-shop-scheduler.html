@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="provenance" content="$Id: index.html 1472 2012-09-21 22:17:41Z audrey $" />
+    <link rel="stylesheet" href="/theme/css/bootstrap.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/bootstrap-responsive.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/code.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/500L.css" type="text/css" />
+    <title>500 Lines or Less | A Flow Shop Scheduler</title>
+    <script type="text/x-mathjax-config">
+        MathJax.Hub.Config({
+          tex2jax: {
+            inlineMath: [['$','$'], ['\\(','\\)']],
+            displayMath: [ ['$$','$$'], ["\\[","\\]"] ],
+          },
+        });
+    </script>
+    <script type="text/javascript" src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+    </script>
+</head>
+  <body>
+    <div class="container">
+      <div class="row">
+        <div class="hero-unit">
+	  <a class='pull-right' href='/en/index.html'></a>
+          <h1>A Flow Shop Scheduler</h1>
+          <h2 class="author">Dr. Christian Muise</h2>
+          <blockquote class="pull-right">
+            </blockquote>
+
+        </div>
+      </div>
+      <div class="row">
+        <div class='span10 offset1' id='content'>
+          <p><em><a href="http://haz.ca">Dr. Christian Muise</a> is a Research Fellow with the <a href="http://groups.csail.mit.edu/mers/">MERS group</a> at <a href="http://www.csail.mit.edu/">MIT’s CSAIL</a>. He is interested in a variety of topics including AI, data-driven projects, mapping, graph theory, and data visualization, as well as celtic music, carving, soccer, and coffee.</em></p>
+<h2 id="a-flow-shop-scheduler">A Flow Shop Scheduler</h2>
+<p><em>Flow shop scheduling</em> is one of the most challenging and well-studied problems in operations research. Like many challenging optimization problems, finding the best solution is just not possible for problems of a practical size. In this chapter we consider the implementation of a flow shop scheduling solver that uses a technique called <em>local search</em>. Local search allows us to find a solution that is “pretty good” when finding the best solution isn’t possible. The solver will try and find new solutions to the problem for a given amount of time, and finish by returning the best solution found.</p>
+<p>The idea behind local search is to improve an existing solution heuristically by considering similar solutions that may be a little better. The solver uses a variety of strategies to (1) try and find similar solutions, and (2) choose one that is promising to explore next. The implementation is written in Python, and has no external requirements. By leveraging some of Python’s lesser-known functionality, the solver dynamically changes its search strategy during the solving process based on which strategies work well.</p>
+<p>First, we provide some background material on the flow shop scheduling problem and local search techniques. We then look in detail at the general solver code and the various heuristics and neighbourhood selection strategies that we use. Next we consider the dynamic strategy selection that the solver uses to tie everything together. Finally, we conclude with a summary of the project and some lessons learned through the implementation process.</p>
+<h2 id="background">Background</h2>
+<h3 id="flow-shop-scheduling">Flow Shop Scheduling</h3>
+<p>The flow shop scheduling problem is an optimization problem in which we must determine the processing time for various tasks in a job in order to schedule the tasks to minimize the total time it takes to complete the job. Take, for example, a car manufacturer with an assembly line where each part of the car is completed in sequence on different machines. Different orders may have custom requirements, making the task of painting the body, for example, vary from one car to the next. In our example, each car is a new <em>job</em> and each part for the car is called a <em>task</em>. Every job will have the same sequence of tasks to complete.</p>
+<p>The objective in flow shop scheduling is to minimize the total time it takes to process all of the tasks from every job to completion. (Typically, this total time is referred to as the <em>makespan</em>.) This problem has many applications, but is most related to optimizing production facilities.</p>
+<p>Every flow shop problem consists of <span class="math inline">\(n\)</span> machines and <span class="math inline">\(m\)</span> jobs. In our car example, there will be <span class="math inline">\(n\)</span> stations to work on the car and <span class="math inline">\(m\)</span> cars to make in total. Each job is made up of exactly <span class="math inline">\(n\)</span> tasks, and we can assume that the <span class="math inline">\(i\)</span>-th task of a job must use machine <span class="math inline">\(i\)</span> and requires a predetermined amount of processing time: <span class="math inline">\(p(j,i)\)</span> is the processing time for the <span class="math inline">\(i\)</span>th task of job <span class="math inline">\(j\)</span>. Further, the order of the tasks for any given job should follow the order of the machines available; for a given job, task <span class="math inline">\(i\)</span> must be completed prior to the start of task <span class="math inline">\(i+1\)</span>. In our car example, we wouldn’t want to start painting the car before the frame was assembled. The final restriction is that no two tasks can be processed on a machine simultaneously.</p>
+<p>Because the order of tasks within a job is predetermined, a solution to the flow shop scheduling problem can be represented as a permutation of the jobs. The order of jobs processed on a machine will be the same for every machine, and given a permutation, a task for machine <span class="math inline">\(i\)</span> in job <span class="math inline">\(j\)</span> is scheduled to be the latest of the following two possibilities:</p>
+<ol type="1">
+<li><p>The completion of the task for machine <span class="math inline">\(i\)</span> in job <span class="math inline">\(j-1\)</span> (i.e., the most recent task on the same machine), or</p></li>
+<li><p>The completion of the task for machine <span class="math inline">\(i-1\)</span> in job <span class="math inline">\(j\)</span> (i.e., the most recent task on the same job)</p></li>
+</ol>
+<p>Because we select the maximum of these two values, idle time for either machine <span class="math inline">\(i\)</span> or job <span class="math inline">\(j\)</span> will be created. It is this idle time that we ultimately want to minimize, as it will push the total makespan to be larger.</p>
+<p>Due to the simple form of the problem, any permutation of jobs is a valid solution, and the optimal solution will correspond to <em>some</em> permutation. Thus, we search for improved solutions by changing the permutation of jobs and measuring the corresponding makespan. In what follows, we refer to a permutation of the jobs as a <em>candidate</em>.</p>
+<p>Let’s consider a simple example with two jobs and two machines. The first job has tasks <span class="math inline">\(\mathbf{A}\)</span> and <span class="math inline">\(\mathbf{B}\)</span>, which take 1 and 2 minutes to complete respectively. The second job has tasks <span class="math inline">\(\mathbf{C}\)</span> and <span class="math inline">\(\mathbf{D}\)</span>, which take 2 and 1 minutes to complete respectively. Recall that <span class="math inline">\(\mathbf{A}\)</span> must come before <span class="math inline">\(\mathbf{B}\)</span> and <span class="math inline">\(\mathbf{C}\)</span> must come before <span class="math inline">\(\mathbf{D}\)</span>. Because there are two jobs, we have just two permutations to consider. If we order job 2 before job 1, the makespan is 5 (<a href="#figure-9.1">Figure 9.1</a>); on the other hand, if we order job 1 before job 2, the makespan is only 4 (<a href="#figure-9.2">Figure 9.2</a>).</p>
+<div class="center figure">
+<a name="figure-9.1"></a><img src="flow-shop-images/example1.png" alt="Figure 9.1 - Flow Shop Example 1" title="Figure 9.1 - Flow Shop Example 1" />
+</div>
+<p class="center figcaption">
+<small>Figure 9.1 - Flow Shop Example 1</small>
+</p>
+<div class="center figure">
+<a name="figure-9.2"></a><img src="flow-shop-images/example2.png" alt="Figure 9.2 - Flow Shop Example 2" title="Figure 9.2 - Flow Shop Example 2" />
+</div>
+<p class="center figcaption">
+<small>Figure 9.2 - Flow Shop Example 2</small>
+</p>
+<p>Notice that there is no budge room to push any of the tasks earlier. A guiding principle for a good permutation is to minimize the time in which any machine is left without a task to process.</p>
+<h3 id="local-search">Local Search</h3>
+<p>Local search is a strategy for solving optimization problems when the optimal solution is too hard to compute. Intuitively, it moves from one solution that seems pretty good to another solution that seems even better. Rather than considering every possible solution as a candidate to focus on next, we define what is known as a <em>neighbourhood</em>: the set of solutions considered to be similar to the current solution. Because any permutation of jobs is a valid solution, we can view any mechanism that shuffles the jobs around as a local search procedure (this is in fact what we do below).</p>
+<p>To use local search formally, we must answer a few questions:</p>
+<ol type="1">
+<li>What solution should we start with?</li>
+<li>Given a solution, what are the neighbouring solutions that we should consider?</li>
+<li>Given the set of candidate neighbours, which one should we consider moving to next?</li>
+</ol>
+<p>The following three sections address these questions in turn.</p>
+<h2 id="general-solver">General Solver</h2>
+<p>In this section we provide the general framework for the flow shop scheduler. To begin, we have the necessary Python imports and the settings for the solver:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> sys, os, time, random</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> functools <span class="im">import</span> partial</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> collections <span class="im">import</span> namedtuple</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> itertools <span class="im">import</span> product</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> neighbourhood <span class="im">as</span> neigh</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> heuristics <span class="im">as</span> heur</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="co">##############</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="co">## Settings ##</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a><span class="co">##############</span></span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>TIME_LIMIT <span class="op">=</span> <span class="fl">300.0</span> <span class="co"># Time (in seconds) to run the solver</span></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a>TIME_INCREMENT <span class="op">=</span> <span class="fl">13.0</span> <span class="co"># Time (in seconds) in between heuristic measurements</span></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>DEBUG_SWITCH <span class="op">=</span> <span class="va">False</span> <span class="co"># Displays intermediate heuristic info when True</span></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a>MAX_LNS_NEIGHBOURHOODS <span class="op">=</span> <span class="dv">1000</span> <span class="co"># Maximum number of neighbours to explore in LNS</span></span></code></pre></div>
+<p>There are two settings that should be explained further. The <code>TIME_INCREMENT</code> setting will be used as part of the dynamic strategy selection, and the <code>MAX_LNS_NEIGHBOURHOODS</code> setting will be used as part of the neighbourhood selection strategy. Both are described in more detail below.</p>
+<p>These settings could be exposed to the user as command line parameters, but at this stage we instead provide the input data as parameters to the program. The input problem—a problem from the Taillard benchmark set—is assumed to be in a standard format for flow shop scheduling. The following code is used as the <code>__main__</code> method for the solver file, and calls the appropriate functions based on the number of parameters input to the program:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="va">__name__</span> <span class="op">==</span> <span class="st">&#39;__main__&#39;</span>:</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> <span class="bu">len</span>(sys.argv) <span class="op">==</span> <span class="dv">2</span>:</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>        data <span class="op">=</span> parse_problem(sys.argv[<span class="dv">1</span>], <span class="dv">0</span>)</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">elif</span> <span class="bu">len</span>(sys.argv) <span class="op">==</span> <span class="dv">3</span>:</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>        data <span class="op">=</span> parse_problem(sys.argv[<span class="dv">1</span>], <span class="bu">int</span>(sys.argv[<span class="dv">2</span>]))</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">else</span>:</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>        <span class="bu">print</span> <span class="st">&quot;</span><span class="ch">\n</span><span class="st">Usage: python flow.py &lt;Taillard problem file&gt; [&lt;instance number&gt;]</span><span class="ch">\n</span><span class="st">&quot;</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>        sys.exit(<span class="dv">0</span>)</span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>    (perm, ms) <span class="op">=</span> solve(data)</span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>    print_solution(data, perm)</span></code></pre></div>
+<p>We will describe the parsing of Taillard problem files shortly. (The files are <a href="http://mistic.heig-vd.ch/taillard/problemes.dir/ordonnancement.dir/ordonnancement.html">available online</a>.)</p>
+<p>The <code>solve</code> method expects the <code>data</code> variable to be a list of integers containing the activity durations for each job. The <code>solve</code> method starts by initializing a global set of strategies (to be described below). The key is that we use <code>strat_*</code> variables to maintain statistics on each of the strategies. This aids in selecting the strategy dynamically during the solving process.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> solve(data):</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Solves an instance of the flow shop scheduling problem&quot;&quot;&quot;</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    <span class="co"># We initialize the strategies here to avoid cyclic import issues</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    initialize_strategies()</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">global</span> STRATEGIES</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Record the following for each strategy:</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    <span class="co">#  improvements: The amount a solution was improved by this strategy</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>    <span class="co">#  time_spent: The amount of time spent on the strategy</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>    <span class="co">#  weights: The weights that correspond to how good a strategy is</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>    <span class="co">#  usage: The number of times we use a strategy</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    strat_improvements <span class="op">=</span> {strategy: <span class="dv">0</span> <span class="cf">for</span> strategy <span class="kw">in</span> STRATEGIES}</span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>    strat_time_spent <span class="op">=</span> {strategy: <span class="dv">0</span> <span class="cf">for</span> strategy <span class="kw">in</span> STRATEGIES}</span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>    strat_weights <span class="op">=</span> {strategy: <span class="dv">1</span> <span class="cf">for</span> strategy <span class="kw">in</span> STRATEGIES}</span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>    strat_usage <span class="op">=</span> {strategy: <span class="dv">0</span> <span class="cf">for</span> strategy <span class="kw">in</span> STRATEGIES}</span></code></pre></div>
+<p>One appealing feature of the flow shop scheduling problem is that <em>every</em> permutation is a valid solution, and at least one will have the optimal makespan (though many will have horrible makespans). Thankfully, this allows us to forgo checking that we stay within the space of feasible solutions when going from one permutation to another—everything is feasible!</p>
+<p>However, to start a local search in the space of permutations, we must have an initial permutation. To keep things simple, we seed our local search by shuffling the list of jobs randomly:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Start with a random permutation of the jobs</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    perm <span class="op">=</span> <span class="bu">range</span>(<span class="bu">len</span>(data))</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    random.shuffle(perm)</span></code></pre></div>
+<p>Next, we initialize the variables that allow us to keep track of the best permutation found so far, as well as the timing information for providing output. </p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Keep track of the best solution</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    best_make <span class="op">=</span> makespan(data, perm)</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    best_perm <span class="op">=</span> perm</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    res <span class="op">=</span> best_make</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Maintain statistics and timing for the iterations</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    iteration <span class="op">=</span> <span class="dv">0</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    time_limit <span class="op">=</span> time.time() <span class="op">+</span> TIME_LIMIT</span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>    time_last_switch <span class="op">=</span> time.time()</span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a>    time_delta <span class="op">=</span> TIME_LIMIT <span class="op">/</span> <span class="dv">10</span></span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a>    checkpoint <span class="op">=</span> time.time() <span class="op">+</span> time_delta</span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a>    percent_complete <span class="op">=</span> <span class="dv">10</span></span>
+<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-15"><a href="#cb5-15" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span> <span class="st">&quot;</span><span class="ch">\n</span><span class="st">Solving...&quot;</span></span></code></pre></div>
+<p>As this is a local search solver, we simply continue to try and improve solutions as long as the time limit has not been reached. We provide output indicating the progress of the solver and keep track of the number of iterations we have computed:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> time.time() <span class="op">&lt;</span> time_limit:</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> time.time() <span class="op">&gt;</span> checkpoint:</span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>            <span class="bu">print</span> <span class="st">&quot; </span><span class="sc">%d</span><span class="st"> </span><span class="sc">%%</span><span class="st">&quot;</span> <span class="op">%</span> percent_complete</span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>            percent_complete <span class="op">+=</span> <span class="dv">10</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>            checkpoint <span class="op">+=</span> time_delta</span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a>        iteration <span class="op">+=</span> <span class="dv">1</span></span></code></pre></div>
+<p>Below we describe how the strategy is picked, but for now it is sufficient to know that the strategy provides a <code>neighbourhood</code> function and a <code>heuristic</code> function. The former gives us a set of <em>next candidates</em> to consider while the latter chooses the <em>best candidate</em> from the set. From these functions, we have a new permutation (<code>perm</code>) and a new makespan result (<code>res</code>):</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Heuristically choose the best strategy</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>        strategy <span class="op">=</span> pick_strategy(STRATEGIES, strat_weights)</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>        old_val <span class="op">=</span> res</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>        old_time <span class="op">=</span> time.time()</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Use the current strategy&#39;s heuristic to pick the next permutation from</span></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>        <span class="co"># the set of candidates generated by the strategy&#39;s neighbourhood</span></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>        candidates <span class="op">=</span> strategy.neighbourhood(data, perm)</span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>        perm <span class="op">=</span> strategy.heuristic(data, candidates)</span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a>        res <span class="op">=</span> makespan(data, perm)</span></code></pre></div>
+<p>The code for computing the makespan is quite simple: we can compute it from a permutation by evaluating when the final job completes. We will see below how <code>compile_solution</code> works, but for now it suffices to know that a 2D array is returned and the element at <code>[-1][-1]</code> corresponds to the start time of the final job in the schedule:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> makespan(data, perm):</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Computes the makespan of the provided solution&quot;&quot;&quot;</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> compile_solution(data, perm)[<span class="op">-</span><span class="dv">1</span>][<span class="op">-</span><span class="dv">1</span>] <span class="op">+</span> data[perm[<span class="op">-</span><span class="dv">1</span>]][<span class="op">-</span><span class="dv">1</span>]</span></code></pre></div>
+<p>To help select a strategy, we keep statistics on (1) how much the strategy has improved the solution, (2) how much time the strategy has spent computing information, and (3) how many times the strategy was used. We also update the variables for the best permutation if we stumble upon a better solution:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Record the statistics on how the strategy did</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>        strat_improvements[strategy] <span class="op">+=</span> res <span class="op">-</span> old_val</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>        strat_time_spent[strategy] <span class="op">+=</span> time.time() <span class="op">-</span> old_time</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>        strat_usage[strategy] <span class="op">+=</span> <span class="dv">1</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> res <span class="op">&lt;</span> best_make:</span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>            best_make <span class="op">=</span> res</span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>            best_perm <span class="op">=</span> perm[:]</span></code></pre></div>
+<p>At regular intervals, the statistics for strategy use are updated. We removed the associated snippet for readability, and detail the code below. As a final step, once the while loop is complete (i.e., the time limit is reached) we output some statistics about the solving process and return the best permutation along with its makespan:</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span> <span class="st">&quot; </span><span class="sc">%d</span><span class="st"> </span><span class="sc">%%</span><span class="ch">\n</span><span class="st">&quot;</span> <span class="op">%</span> percent_complete</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span> <span class="st">&quot;</span><span class="ch">\n</span><span class="st">Went through </span><span class="sc">%d</span><span class="st"> iterations.&quot;</span> <span class="op">%</span> iteration</span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span> <span class="st">&quot;</span><span class="ch">\n</span><span class="st">(usage) Strategy:&quot;</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>    results <span class="op">=</span> <span class="bu">sorted</span>([(strat_weights[STRATEGIES[i]], i)</span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>                      <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="bu">len</span>(STRATEGIES))], reverse<span class="op">=</span><span class="va">True</span>)</span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> (w, i) <span class="kw">in</span> results:</span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>        <span class="bu">print</span> <span class="st">&quot;(</span><span class="sc">%d</span><span class="st">) </span><span class="ch">\t</span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> (strat_usage[STRATEGIES[i]], STRATEGIES[i].name)</span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> (best_perm, best_make)</span></code></pre></div>
+<h3 id="parsing-problems">Parsing Problems</h3>
+<p>As input to the parsing procedure, we provide the file name where the input can be found and the example number that should be used. (Each file contains a number of instances.)</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> parse_problem(filename, k<span class="op">=</span><span class="dv">1</span>):</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Parse the kth instance of a Taillard problem file</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a><span class="co">    The Taillard problem files are a standard benchmark set for the problem</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a><span class="co">    of flow shop scheduling. </span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a><span class="co">    print &quot;</span><span class="ch">\n</span><span class="co">Parsing...&quot;</span></span></code></pre></div>
+<p>We start the parsing by reading in the file and identifying the line that separates each of the problem instances:</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>    <span class="cf">with</span> <span class="bu">open</span>(filename, <span class="st">&#39;r&#39;</span>) <span class="im">as</span> f:</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Identify the string that separates instances</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>        problem_line <span class="op">=</span> (<span class="st">&#39;/number of jobs, number of machines, initial seed, &#39;</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>                        <span class="st">&#39;upper bound and lower bound :/&#39;</span>)</span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Strip spaces and newline characters from every line</span></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>        lines <span class="op">=</span> <span class="bu">map</span>(<span class="bu">str</span>.strip, f.readlines())</span></code></pre></div>
+<p>To make locating the correct instance easier, we assume that lines will be separated by a ‘/’ character. This allows us to split the file based on a common string that appears at the top of every instance, and adding a ‘/’ character to the start of the first line allows the string processing below to work correctly regardless of the instance we choose. We also detect when a provided instance number is out of range given the collection of instances found in the file.</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a>        <span class="co"># We prep the first line for later</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>        lines[<span class="dv">0</span>] <span class="op">=</span> <span class="st">&#39;/&#39;</span> <span class="op">+</span> lines[<span class="dv">0</span>]</span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>        <span class="co"># We also know &#39;/&#39; does not appear in the files, so we can use it as</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>        <span class="co">#  a separator to find the right lines for the kth problem instance</span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>            lines <span class="op">=</span> <span class="st">&#39;/&#39;</span>.join(lines).split(problem_line)[k].split(<span class="st">&#39;/&#39;</span>)[<span class="dv">2</span>:]</span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">IndexError</span>:</span>
+<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a>            max_instances <span class="op">=</span> <span class="bu">len</span>(<span class="st">&#39;/&#39;</span>.join(lines).split(problem_line)) <span class="op">-</span> <span class="dv">1</span></span>
+<span id="cb13-10"><a href="#cb13-10" aria-hidden="true" tabindex="-1"></a>            <span class="bu">print</span> <span class="st">&quot;</span><span class="ch">\n</span><span class="st">Error: Instance must be within 1 and </span><span class="sc">%d</span><span class="ch">\n</span><span class="st">&quot;</span> <span class="op">%</span> max_instances</span>
+<span id="cb13-11"><a href="#cb13-11" aria-hidden="true" tabindex="-1"></a>            sys.exit(<span class="dv">0</span>)</span></code></pre></div>
+<p>We parse the data directly, converting the processing time of each task to an integer and storing it in a list. Finally, we zip the data to invert the rows and columns so that the format respects what is expected by the solving code above. (Every item in <code>data</code> should correspond to a particular job.)</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Split every line based on spaces and convert each item to an int</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>        data <span class="op">=</span> [<span class="bu">map</span>(<span class="bu">int</span>, line.split()) <span class="cf">for</span> line <span class="kw">in</span> lines]</span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a>    <span class="co"># We return the zipped data to rotate the rows and columns, making each</span></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>    <span class="co">#  item in data the durations of tasks for a particular job</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="bu">zip</span>(<span class="op">*</span>data)</span></code></pre></div>
+<h3 id="compiling-solutions">Compiling Solutions</h3>
+<p>A solution to the flow shop scheduling problem consists of precise timing for each task in every job. Because we represent a solution implicitly with a permutation of the jobs, we introduce the <code>compile_solution</code> function to convert a permutation to precise times. As input, the function takes in the data for the problem (giving us the duration of every task) and a permutation of jobs.</p>
+<p>The function begins by initializing the data structure used to store the starting time for each task, and then including the tasks from the first job in the permutation.</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> compile_solution(data, perm):</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Compiles a scheduling on the machines given a permutation of jobs&quot;&quot;&quot;</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>    num_machines <span class="op">=</span> <span class="bu">len</span>(data[<span class="dv">0</span>])</span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Note that using [[]] * m would be incorrect, as it would simply</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>    <span class="co">#  copy the same list m times (as opposed to creating m distinct lists).</span></span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>    machine_times <span class="op">=</span> [[] <span class="cf">for</span> _ <span class="kw">in</span> <span class="bu">range</span>(num_machines)]</span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Assign the initial job to the machines</span></span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a>    machine_times[<span class="dv">0</span>].append(<span class="dv">0</span>)</span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> mach <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">1</span>,num_machines):</span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Start the next task in the job when the previous finishes</span></span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a>        machine_times[mach].append(machine_times[mach<span class="op">-</span><span class="dv">1</span>][<span class="dv">0</span>] <span class="op">+</span></span>
+<span id="cb15-15"><a href="#cb15-15" aria-hidden="true" tabindex="-1"></a>                                   data[perm[<span class="dv">0</span>]][mach<span class="op">-</span><span class="dv">1</span>])</span></code></pre></div>
+<p>We then add all the tasks for the remaining jobs. The first task in a job will always start as soon as the first task in the previous job completes. For the remaining tasks, we schedule the job as early as possible: the maximum out of the completion time of the previous task in the same job and the completion time of the previous task on the same machine.</p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Assign the remaining jobs</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">1</span>, <span class="bu">len</span>(perm)):</span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>        <span class="co"># The first machine never contains any idle time</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a>        job <span class="op">=</span> perm[i]</span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>        machine_times[<span class="dv">0</span>].append(machine_times[<span class="dv">0</span>][<span class="op">-</span><span class="dv">1</span>] <span class="op">+</span> data[perm[i<span class="op">-</span><span class="dv">1</span>]][<span class="dv">0</span>])</span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>        <span class="co"># For the remaining machines, the start time is the max of when the</span></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>        <span class="co">#  previous task in the job completed, or when the current machine</span></span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a>        <span class="co">#  completes the task for the previous job.</span></span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> mach <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">1</span>, num_machines):</span>
+<span id="cb16-12"><a href="#cb16-12" aria-hidden="true" tabindex="-1"></a>            machine_times[mach].append(<span class="bu">max</span>(</span>
+<span id="cb16-13"><a href="#cb16-13" aria-hidden="true" tabindex="-1"></a>                machine_times[mach<span class="op">-</span><span class="dv">1</span>][i] <span class="op">+</span> data[perm[i]][mach<span class="op">-</span><span class="dv">1</span>],</span>
+<span id="cb16-14"><a href="#cb16-14" aria-hidden="true" tabindex="-1"></a>                machine_times[mach][i<span class="op">-</span><span class="dv">1</span>] <span class="op">+</span> data[perm[i<span class="op">-</span><span class="dv">1</span>]][mach]))</span>
+<span id="cb16-15"><a href="#cb16-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-16"><a href="#cb16-16" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> machine_times</span></code></pre></div>
+<h3 id="printing-solutions">Printing Solutions</h3>
+<p>When the solving process is complete, the program outputs information about the solution in a compact form. Rather than providing the precise timing of every task for every job, we output the following pieces of information:</p>
+<ol type="1">
+<li>The permutation of jobs that yielded the best makespan</li>
+<li>The computed makespan of the permutation</li>
+<li>The start time, finish time, and idle time for every machine</li>
+<li>The start time, finish time, and idle time for every job</li>
+</ol>
+<p>The start time for a job or machine corresponds to the start of the first task in the job or on the machine. Similarly, the finish time for a job or machine corresponds to the end of the final task in the job or on the machine. The idle time is the amount of slack in between tasks for a particular job or machine. Ideally we would like to reduce the amount of idle time, as it means the overall process time will be reduced as well.</p>
+<p>The code to compile the solution (i.e., to compute the start times for every task) has already been discussed, and outputting the permutation and makespan are trivial:</p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> print_solution(data, perm):</span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Prints statistics on the computed solution&quot;&quot;&quot;</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>    sol <span class="op">=</span> compile_solution(data, perm)</span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span> <span class="st">&quot;</span><span class="ch">\n</span><span class="st">Permutation: </span><span class="sc">%s</span><span class="ch">\n</span><span class="st">&quot;</span> <span class="op">%</span> <span class="bu">str</span>([i<span class="op">+</span><span class="dv">1</span> <span class="cf">for</span> i <span class="kw">in</span> perm])</span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span> <span class="st">&quot;Makespan: </span><span class="sc">%d</span><span class="ch">\n</span><span class="st">&quot;</span> <span class="op">%</span> makespan(data, perm)</span></code></pre></div>
+<p>Next, we use the string formatting functionality in Python to print the table of start, end, and idle times for each of the machines and jobs. Note that the idle time for a job is the time from when the job started to its completion, minus the sum of the processing times for each task in the job. We compute the idle time for a machine in a similar fashion.</p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a>    row_format <span class="op">=</span><span class="st">&quot;</span><span class="sc">{:&gt;15}</span><span class="st">&quot;</span> <span class="op">*</span> <span class="dv">4</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span> row_format.<span class="bu">format</span>(<span class="st">&#39;Machine&#39;</span>, <span class="st">&#39;Start Time&#39;</span>, <span class="st">&#39;Finish Time&#39;</span>, <span class="st">&#39;Idle Time&#39;</span>)</span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> mach <span class="kw">in</span> <span class="bu">range</span>(<span class="bu">len</span>(data[<span class="dv">0</span>])):</span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>        finish_time <span class="op">=</span> sol[mach][<span class="op">-</span><span class="dv">1</span>] <span class="op">+</span> data[perm[<span class="op">-</span><span class="dv">1</span>]][mach]</span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>        idle_time <span class="op">=</span> (finish_time <span class="op">-</span> sol[mach][<span class="dv">0</span>]) <span class="op">-</span> <span class="bu">sum</span>([job[mach] <span class="cf">for</span> job <span class="kw">in</span> data])</span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>        <span class="bu">print</span> row_format.<span class="bu">format</span>(mach<span class="op">+</span><span class="dv">1</span>, sol[mach][<span class="dv">0</span>], finish_time, idle_time)</span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>    results <span class="op">=</span> []</span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="bu">len</span>(data)):</span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>        finish_time <span class="op">=</span> sol[<span class="op">-</span><span class="dv">1</span>][i] <span class="op">+</span> data[perm[i]][<span class="op">-</span><span class="dv">1</span>]</span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a>        idle_time <span class="op">=</span> (finish_time <span class="op">-</span> sol[<span class="dv">0</span>][i]) <span class="op">-</span> <span class="bu">sum</span>([time <span class="cf">for</span> time <span class="kw">in</span> data[perm[i]]])</span>
+<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a>        results.append((perm[i]<span class="op">+</span><span class="dv">1</span>, sol[<span class="dv">0</span>][i], finish_time, idle_time))</span>
+<span id="cb18-13"><a href="#cb18-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-14"><a href="#cb18-14" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span> <span class="st">&quot;</span><span class="ch">\n</span><span class="st">&quot;</span></span>
+<span id="cb18-15"><a href="#cb18-15" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span> row_format.<span class="bu">format</span>(<span class="st">&#39;Job&#39;</span>, <span class="st">&#39;Start Time&#39;</span>, <span class="st">&#39;Finish Time&#39;</span>, <span class="st">&#39;Idle Time&#39;</span>)</span>
+<span id="cb18-16"><a href="#cb18-16" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> r <span class="kw">in</span> <span class="bu">sorted</span>(results):</span>
+<span id="cb18-17"><a href="#cb18-17" aria-hidden="true" tabindex="-1"></a>        <span class="bu">print</span> row_format.<span class="bu">format</span>(<span class="op">*</span>r)</span>
+<span id="cb18-18"><a href="#cb18-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-19"><a href="#cb18-19" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span> <span class="st">&quot;</span><span class="ch">\n\n</span><span class="st">Note: Idle time does not include initial or final wait time.</span><span class="ch">\n</span><span class="st">&quot;</span></span></code></pre></div>
+<h2 id="neighbourhoods">Neighbourhoods</h2>
+<p>The idea behind local search is to move <em>locally</em> from one solution to other solutions nearby. We refer to the <em>neighbourhood</em> of a given solution as the other solutions that are local to it. In this section, we detail four potential neighbourhoods, each of increasing complexity.</p>
+<p>The first neighbourhood produces a given number of random permutations. This neighbourhood does not even consider the solution that we begin with, and so the term “neighbourhood” stretches the truth. However, including some randomness in the search is good practice, as it promotes exploration of the search space.</p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> neighbours_random(data, perm, num <span class="op">=</span> <span class="dv">1</span>):</span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Returns &lt;num&gt; random job permutations, including the current one</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a>    candidates <span class="op">=</span> [perm]</span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(num):</span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>        candidate <span class="op">=</span> perm[:]</span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a>        random.shuffle(candidate)</span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a>        candidates.append(candidate)</span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> candidates</span></code></pre></div>
+<p>For the next neighbourhood, we consider swapping any two jobs in the permutation. By using the <code>combinations</code> function from the <code>itertools</code> package, we can easily iterate through every pair of indices and create a new permutation that corresponds to swapping the jobs located at each index. In a sense, this neighbourhood creates permutations that are very similar to the one we began with.</p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> neighbours_swap(data, perm):</span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Returns the permutations corresponding to swapping every pair of jobs</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a>    candidates <span class="op">=</span> [perm]</span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> (i,j) <span class="kw">in</span> combinations(<span class="bu">range</span>(<span class="bu">len</span>(perm)), <span class="dv">2</span>):</span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a>        candidate <span class="op">=</span> perm[:]</span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a>        candidate[i], candidate[j] <span class="op">=</span> candidate[j], candidate[i]</span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a>        candidates.append(candidate)</span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> candidates</span></code></pre></div>
+<p>The next neighbourhood we consider uses information specific to the problem at hand. We find the jobs with the most idle time and consider swapping them in every way possible. We take in a value <code>size</code> which is the number of jobs we consider: the <code>size</code> most idle jobs. The first step in the process is to compute the idle time for every job in the permutation:</p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> neighbours_idle(data, perm, size<span class="op">=</span><span class="dv">4</span>):</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Returns the permutations of the &lt;size&gt; most idle jobs</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>    candidates <span class="op">=</span> [perm]</span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Compute the idle time for each job</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>    sol <span class="op">=</span> flow.compile_solution(data, perm)</span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>    results <span class="op">=</span> []</span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="bu">len</span>(data)):</span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a>        finish_time <span class="op">=</span> sol[<span class="op">-</span><span class="dv">1</span>][i] <span class="op">+</span> data[perm[i]][<span class="op">-</span><span class="dv">1</span>]</span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a>        idle_time <span class="op">=</span> (finish_time <span class="op">-</span> sol[<span class="dv">0</span>][i]) <span class="op">-</span> <span class="bu">sum</span>([t <span class="cf">for</span> t <span class="kw">in</span> data[perm[i]]])</span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a>        results.append((idle_time, i))</span></code></pre></div>
+<p>Next, we compute the list of <code>size</code> jobs that have the most idle time.</p>
+<div class="sourceCode" id="cb22"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Take the &lt;size&gt; most idle jobs</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>    subset <span class="op">=</span> [job_ind <span class="cf">for</span> (idle, job_ind) <span class="kw">in</span> <span class="bu">reversed</span>(<span class="bu">sorted</span>(results))][:size]</span></code></pre></div>
+<p>Finally, we construct the neighbourhood by considering every permutation of the most idle jobs that we have identified. To find the permutations, we make use of the <code>permutations</code> function from the <code>itertools</code> package.</p>
+<div class="sourceCode" id="cb23"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Enumerate the permutations of the idle jobs</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> ordering <span class="kw">in</span> permutations(subset):</span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a>        candidate <span class="op">=</span> perm[:]</span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="bu">len</span>(ordering)):</span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a>            candidate[subset[i]] <span class="op">=</span> perm[ordering[i]]</span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a>        candidates.append(candidate)</span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> candidates</span></code></pre></div>
+<p>The final neighbourhood that we consider is commonly referred to as <em>Large Neighbourhood Search</em> (LNS). Intuitively, LNS works by considering small subsets of the current permutation in isolation—locating the best permutation of the subset of jobs gives us a single candidate for the LNS neighbourhood. By repeating this process for several (or all) subsets of a particular size, we can increase the number of candidates in the neighbourhood. We limit the number that are considered through the <code>MAX_LNS_NEIGHBOURHOODS</code> parameter, as the number of neighbours can grow quite quickly. The first step in the LNS computation is to compute the random list of job sets that we will consider swapping using the <code>combinations</code> function of the <code>itertools</code> package:</p>
+<div class="sourceCode" id="cb24"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> neighbours_LNS(data, perm, size <span class="op">=</span> <span class="dv">2</span>):</span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Returns the Large Neighbourhood Search neighbours</span></span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a>    candidates <span class="op">=</span> [perm]</span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Bound the number of neighbourhoods in case there are too many jobs</span></span>
+<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a>    neighbourhoods <span class="op">=</span> <span class="bu">list</span>(combinations(<span class="bu">range</span>(<span class="bu">len</span>(perm)), size))</span>
+<span id="cb24-7"><a href="#cb24-7" aria-hidden="true" tabindex="-1"></a>    random.shuffle(neighbourhoods)</span></code></pre></div>
+<p>Next, we iterate through the subsets to find the best permutation of jobs in each one. We have seen similar code above for iterating through all permutations of the most idle jobs. The key difference here is that we record only the best permutation for the subset, as the larger neighbourhood is constructed by choosing one permutation for each subset of the considered jobs.</p>
+<div class="sourceCode" id="cb25"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> subset <span class="kw">in</span> neighbourhoods[:flow.MAX_LNS_NEIGHBOURHOODS]:</span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Keep track of the best candidate for each neighbourhood</span></span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a>        best_make <span class="op">=</span> flow.makespan(data, perm)</span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a>        best_perm <span class="op">=</span> perm</span>
+<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Enumerate every permutation of the selected neighbourhood</span></span>
+<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> ordering <span class="kw">in</span> permutations(subset):</span>
+<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a>            candidate <span class="op">=</span> perm[:]</span>
+<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a>            <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="bu">len</span>(ordering)):</span>
+<span id="cb25-11"><a href="#cb25-11" aria-hidden="true" tabindex="-1"></a>                candidate[subset[i]] <span class="op">=</span> perm[ordering[i]]</span>
+<span id="cb25-12"><a href="#cb25-12" aria-hidden="true" tabindex="-1"></a>            res <span class="op">=</span> flow.makespan(data, candidate)</span>
+<span id="cb25-13"><a href="#cb25-13" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> res <span class="op">&lt;</span> best_make:</span>
+<span id="cb25-14"><a href="#cb25-14" aria-hidden="true" tabindex="-1"></a>                best_make <span class="op">=</span> res</span>
+<span id="cb25-15"><a href="#cb25-15" aria-hidden="true" tabindex="-1"></a>                best_perm <span class="op">=</span> candidate</span>
+<span id="cb25-16"><a href="#cb25-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-17"><a href="#cb25-17" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Record the best candidate as part of the larger neighbourhood</span></span>
+<span id="cb25-18"><a href="#cb25-18" aria-hidden="true" tabindex="-1"></a>        candidates.append(best_perm)</span>
+<span id="cb25-19"><a href="#cb25-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-20"><a href="#cb25-20" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> candidates</span></code></pre></div>
+<p>If we were to set the <code>size</code> parameter to be equal to the number of jobs, then every permutation would be considered and the best one selected. In practice, however, we need to limit the size of the subset to around 3 or 4; anything larger would cause the <code>neighbours_LNS</code> function to take a prohibitive amount of time.</p>
+<h2 id="heuristics">Heuristics</h2>
+<p>A heuristic returns a single candidate permutation from a set of provided candidates. The heuristic is also given access to the problem data in order to evaluate which candidate might be preferred.</p>
+<p>The first heuristic that we consider is <code>heur_random</code>. This heuristic randomly selects a candidate from the list without evaluating which one might be preferred:</p>
+<div class="sourceCode" id="cb26"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> heur_random(data, candidates):</span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Returns a random candidate choice</span></span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> random.choice(candidates)</span></code></pre></div>
+<p>The next heuristic <code>heur_hillclimbing</code> uses the other extreme. Rather than randomly selecting a candidate, it selects the candidate that has the best makespan. Note that the list <code>scores</code> will contain tuples of the form <code>(make,perm)</code> where <code>make</code> is the makespan value for permutation <code>perm</code>. Sorting such a list places the tuple with the best makespan at the start of the list; from this tuple we return the permutation.</p>
+<div class="sourceCode" id="cb27"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> heur_hillclimbing(data, candidates):</span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Returns the best candidate in the list</span></span>
+<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a>    scores <span class="op">=</span> [(flow.makespan(data, perm), perm) <span class="cf">for</span> perm <span class="kw">in</span> candidates]</span>
+<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="bu">sorted</span>(scores)[<span class="dv">0</span>][<span class="dv">1</span>]</span></code></pre></div>
+<p>The final heuristic, <code>heur_random_hillclimbing</code>, combines both the random and hillclimbing heuristics above. When performing local search, you may not always want to choose a random candidate, or even the best one. The <code>heur_random_hillclimbing</code> heuristic returns a “pretty good” solution by choosing the best candidate with probability 0.5, then the second best with probability 0.25, and so on. The while-loop essentially flips a coin at every iteration to see if it should continue increasing the index (with a limit on the size of the list). The final index chosen corresponds to the candidate that the heuristic selects.</p>
+<div class="sourceCode" id="cb28"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> heur_random_hillclimbing(data, candidates):</span>
+<span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Returns a candidate with probability proportional to its rank in sorted quality</span></span>
+<span id="cb28-3"><a href="#cb28-3" aria-hidden="true" tabindex="-1"></a>    scores <span class="op">=</span> [(flow.makespan(data, perm), perm) <span class="cf">for</span> perm <span class="kw">in</span> candidates]</span>
+<span id="cb28-4"><a href="#cb28-4" aria-hidden="true" tabindex="-1"></a>    i <span class="op">=</span> <span class="dv">0</span></span>
+<span id="cb28-5"><a href="#cb28-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> (random.random() <span class="op">&lt;</span> <span class="fl">0.5</span>) <span class="kw">and</span> (i <span class="op">&lt;</span> <span class="bu">len</span>(scores) <span class="op">-</span> <span class="dv">1</span>):</span>
+<span id="cb28-6"><a href="#cb28-6" aria-hidden="true" tabindex="-1"></a>        i <span class="op">+=</span> <span class="dv">1</span></span>
+<span id="cb28-7"><a href="#cb28-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> <span class="bu">sorted</span>(scores)[i][<span class="dv">1</span>]</span></code></pre></div>
+<p>Because makespan is the criteria that we are trying to optimize, hillclimbing will steer the local search process towards solutions with a better makespan. Introducing randomness allows us to explore the neighbourhood instead of going blindly towards the best-looking solution at every step.</p>
+<h2 id="dynamic-strategy-selection">Dynamic Strategy Selection</h2>
+<p>At the heart of the local search for a good permutation is the use of a particular heuristic and neighbourhood function to jump from one solution to another. How do we choose one set of options over another? In practice, it frequently pays off to switch strategies during the search. The dynamic strategy selection that we use will switch between combinations of heuristic and neighbourhood functions to try and shift dynamically to those strategies that work best. For us, a <em>strategy</em> is a particular configuration of heuristic and neighbourhood functions (including their parameter values.)</p>
+<p>To begin, our code constructs the range of strategies that we want to consider during solving. In the strategy initialization, we use the <code>partial</code> function from the <code>functools</code> package to partially assign the parameters for each of the neighbourhoods. Additionally, we construct a list of the heuristic functions, and finally we use the product operator to add every combination of neighbourhood and heuristic function as a new strategy.</p>
+<div class="sourceCode" id="cb29"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="co">################</span></span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a><span class="co">## Strategies ##</span></span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a><span class="co">#################################################</span></span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a><span class="co">## A strategy is a particular configuration</span></span>
+<span id="cb29-5"><a href="#cb29-5" aria-hidden="true" tabindex="-1"></a><span class="co">##  of neighbourhood generator (to compute</span></span>
+<span id="cb29-6"><a href="#cb29-6" aria-hidden="true" tabindex="-1"></a><span class="co">##  the next set of candidates) and heuristic</span></span>
+<span id="cb29-7"><a href="#cb29-7" aria-hidden="true" tabindex="-1"></a><span class="co">##  computation (to select the best candidate).</span></span>
+<span id="cb29-8"><a href="#cb29-8" aria-hidden="true" tabindex="-1"></a><span class="co">##</span></span>
+<span id="cb29-9"><a href="#cb29-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-10"><a href="#cb29-10" aria-hidden="true" tabindex="-1"></a>STRATEGIES <span class="op">=</span> []</span>
+<span id="cb29-11"><a href="#cb29-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-12"><a href="#cb29-12" aria-hidden="true" tabindex="-1"></a><span class="co"># Using a namedtuple is a little cleaner than using dictionaries.</span></span>
+<span id="cb29-13"><a href="#cb29-13" aria-hidden="true" tabindex="-1"></a><span class="co">#  E.g., strategy[&#39;name&#39;] versus strategy.name</span></span>
+<span id="cb29-14"><a href="#cb29-14" aria-hidden="true" tabindex="-1"></a>Strategy <span class="op">=</span> namedtuple(<span class="st">&#39;Strategy&#39;</span>, [<span class="st">&#39;name&#39;</span>, <span class="st">&#39;neighbourhood&#39;</span>, <span class="st">&#39;heuristic&#39;</span>])</span>
+<span id="cb29-15"><a href="#cb29-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-16"><a href="#cb29-16" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> initialize_strategies():</span>
+<span id="cb29-17"><a href="#cb29-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-18"><a href="#cb29-18" aria-hidden="true" tabindex="-1"></a>    <span class="kw">global</span> STRATEGIES</span>
+<span id="cb29-19"><a href="#cb29-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-20"><a href="#cb29-20" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Define the neighbourhoods (and parameters) that we would like to use</span></span>
+<span id="cb29-21"><a href="#cb29-21" aria-hidden="true" tabindex="-1"></a>    neighbourhoods <span class="op">=</span> [</span>
+<span id="cb29-22"><a href="#cb29-22" aria-hidden="true" tabindex="-1"></a>        (<span class="st">&#39;Random Permutation&#39;</span>, partial(neigh.neighbours_random, num<span class="op">=</span><span class="dv">100</span>)),</span>
+<span id="cb29-23"><a href="#cb29-23" aria-hidden="true" tabindex="-1"></a>        (<span class="st">&#39;Swapped Pairs&#39;</span>, neigh.neighbours_swap),</span>
+<span id="cb29-24"><a href="#cb29-24" aria-hidden="true" tabindex="-1"></a>        (<span class="st">&#39;Large Neighbourhood Search (2)&#39;</span>, partial(neigh.neighbours_LNS, size<span class="op">=</span><span class="dv">2</span>)),</span>
+<span id="cb29-25"><a href="#cb29-25" aria-hidden="true" tabindex="-1"></a>        (<span class="st">&#39;Large Neighbourhood Search (3)&#39;</span>, partial(neigh.neighbours_LNS, size<span class="op">=</span><span class="dv">3</span>)),</span>
+<span id="cb29-26"><a href="#cb29-26" aria-hidden="true" tabindex="-1"></a>        (<span class="st">&#39;Idle Neighbourhood (3)&#39;</span>, partial(neigh.neighbours_idle, size<span class="op">=</span><span class="dv">3</span>)),</span>
+<span id="cb29-27"><a href="#cb29-27" aria-hidden="true" tabindex="-1"></a>        (<span class="st">&#39;Idle Neighbourhood (4)&#39;</span>, partial(neigh.neighbours_idle, size<span class="op">=</span><span class="dv">4</span>)),</span>
+<span id="cb29-28"><a href="#cb29-28" aria-hidden="true" tabindex="-1"></a>        (<span class="st">&#39;Idle Neighbourhood (5)&#39;</span>, partial(neigh.neighbours_idle, size<span class="op">=</span><span class="dv">5</span>))</span>
+<span id="cb29-29"><a href="#cb29-29" aria-hidden="true" tabindex="-1"></a>    ]</span>
+<span id="cb29-30"><a href="#cb29-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-31"><a href="#cb29-31" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Define the heuristics that we would like to use</span></span>
+<span id="cb29-32"><a href="#cb29-32" aria-hidden="true" tabindex="-1"></a>    heuristics <span class="op">=</span> [</span>
+<span id="cb29-33"><a href="#cb29-33" aria-hidden="true" tabindex="-1"></a>        (<span class="st">&#39;Hill Climbing&#39;</span>, heur.heur_hillclimbing),</span>
+<span id="cb29-34"><a href="#cb29-34" aria-hidden="true" tabindex="-1"></a>        (<span class="st">&#39;Random Selection&#39;</span>, heur.heur_random),</span>
+<span id="cb29-35"><a href="#cb29-35" aria-hidden="true" tabindex="-1"></a>        (<span class="st">&#39;Biased Random Selection&#39;</span>, heur.heur_random_hillclimbing)</span>
+<span id="cb29-36"><a href="#cb29-36" aria-hidden="true" tabindex="-1"></a>    ]</span>
+<span id="cb29-37"><a href="#cb29-37" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-38"><a href="#cb29-38" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Combine every neighbourhood and heuristic strategy</span></span>
+<span id="cb29-39"><a href="#cb29-39" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> (n, h) <span class="kw">in</span> product(neighbourhoods, heuristics):</span>
+<span id="cb29-40"><a href="#cb29-40" aria-hidden="true" tabindex="-1"></a>        STRATEGIES.append(Strategy(<span class="st">&quot;</span><span class="sc">%s</span><span class="st"> / </span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> (n[<span class="dv">0</span>], h[<span class="dv">0</span>]), n[<span class="dv">1</span>], h[<span class="dv">1</span>]))</span></code></pre></div>
+<p>Once the strategies are defined, we do not necessarily want to stick with a single option during search. Instead, we select randomly any one of the strategies, but <em>weight the selection</em> based on how well the strategy has performed. We describe the weighting below, but for the <code>pick_strategy</code> function, we need only a list of strategies and a corresponding list of relative weights (any number will do). To select a random strategy with the given weights, we pick a number uniformly between 0 and the sum of all weights. Subsequently, we find the lowest index <span class="math inline">\(i\)</span> such that the sum of all of the weights for indices smaller than <span class="math inline">\(i\)</span> is greater than the random number that we have chosen. This technique, sometimes referred to as <em>roulette wheel selection</em>, will randomly pick a strategy for us and give a greater chance to those strategies with higher weight.</p>
+<div class="sourceCode" id="cb30"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> pick_strategy(strategies, weights):</span>
+<span id="cb30-2"><a href="#cb30-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Picks a random strategy based on its weight: roulette wheel selection</span></span>
+<span id="cb30-3"><a href="#cb30-3" aria-hidden="true" tabindex="-1"></a>    <span class="co">#  Rather than selecting a strategy entirely at random, we bias the</span></span>
+<span id="cb30-4"><a href="#cb30-4" aria-hidden="true" tabindex="-1"></a>    <span class="co">#  random selection towards strategies that have worked well in the</span></span>
+<span id="cb30-5"><a href="#cb30-5" aria-hidden="true" tabindex="-1"></a>    <span class="co">#  past (according to the weight value).</span></span>
+<span id="cb30-6"><a href="#cb30-6" aria-hidden="true" tabindex="-1"></a>    total <span class="op">=</span> <span class="bu">sum</span>([weights[strategy] <span class="cf">for</span> strategy <span class="kw">in</span> strategies])</span>
+<span id="cb30-7"><a href="#cb30-7" aria-hidden="true" tabindex="-1"></a>    pick <span class="op">=</span> random.uniform(<span class="dv">0</span>, total)</span>
+<span id="cb30-8"><a href="#cb30-8" aria-hidden="true" tabindex="-1"></a>    count <span class="op">=</span> weights[strategies[<span class="dv">0</span>]]</span>
+<span id="cb30-9"><a href="#cb30-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb30-10"><a href="#cb30-10" aria-hidden="true" tabindex="-1"></a>    i <span class="op">=</span> <span class="dv">0</span></span>
+<span id="cb30-11"><a href="#cb30-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> pick <span class="op">&gt;</span> count:</span>
+<span id="cb30-12"><a href="#cb30-12" aria-hidden="true" tabindex="-1"></a>        count <span class="op">+=</span> weights[strategies[i<span class="op">+</span><span class="dv">1</span>]]</span>
+<span id="cb30-13"><a href="#cb30-13" aria-hidden="true" tabindex="-1"></a>        i <span class="op">+=</span> <span class="dv">1</span></span>
+<span id="cb30-14"><a href="#cb30-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb30-15"><a href="#cb30-15" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> strategies[i]</span></code></pre></div>
+<p>What remains is to describe how the weights are augmented during the search for a solution. This occurs in the main while loop of the solver at regularly timed intervals (defined with the <code>TIME_INCREMENT</code> variable):</p>
+<div class="sourceCode" id="cb31"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-2"><a href="#cb31-2" aria-hidden="true" tabindex="-1"></a>        <span class="co"># At regular intervals, switch the weighting on the strategies available.</span></span>
+<span id="cb31-3"><a href="#cb31-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">#  This way, the search can dynamically shift towards strategies that have</span></span>
+<span id="cb31-4"><a href="#cb31-4" aria-hidden="true" tabindex="-1"></a>        <span class="co">#  proven more effective recently.</span></span>
+<span id="cb31-5"><a href="#cb31-5" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> time.time() <span class="op">&gt;</span> time_last_switch <span class="op">+</span> TIME_INCREMENT:</span>
+<span id="cb31-6"><a href="#cb31-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-7"><a href="#cb31-7" aria-hidden="true" tabindex="-1"></a>            time_last_switch <span class="op">=</span> time.time()</span></code></pre></div>
+<p>Recall that <code>strat_improvements</code> stores the sum of all improvements that a strategy has made while <code>strat_time_spent</code> stores the time that the strategy has been given during the last interval. We normalize the improvements made by the total time spent for each strategy to get a metric of how well each strategy has performed in the last interval. Because a strategy may not have had a chance to run at all, we choose a small amount of time as a default value.</p>
+<div class="sourceCode" id="cb32"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb32-1"><a href="#cb32-1" aria-hidden="true" tabindex="-1"></a>            <span class="co"># Normalize the improvements made by the time it takes to make them</span></span>
+<span id="cb32-2"><a href="#cb32-2" aria-hidden="true" tabindex="-1"></a>            results <span class="op">=</span> <span class="bu">sorted</span>([</span>
+<span id="cb32-3"><a href="#cb32-3" aria-hidden="true" tabindex="-1"></a>                (<span class="bu">float</span>(strat_improvements[s]) <span class="op">/</span> <span class="bu">max</span>(<span class="fl">0.001</span>, strat_time_spent[s]), s)</span>
+<span id="cb32-4"><a href="#cb32-4" aria-hidden="true" tabindex="-1"></a>                <span class="cf">for</span> s <span class="kw">in</span> STRATEGIES])</span></code></pre></div>
+<p>Now that we have a ranking of how well each strategy has performed, we add <span class="math inline">\(k\)</span> to the weight of the best strategy (assuming we had <span class="math inline">\(k\)</span> strategies), <span class="math inline">\(k-1\)</span> to the next best strategy, etc. Each strategy will have its weight increased, and the worst strategy in the list will see an increase of only 1.</p>
+<div class="sourceCode" id="cb33"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a>            <span class="co"># Boost the weight for the successful strategies</span></span>
+<span id="cb33-2"><a href="#cb33-2" aria-hidden="true" tabindex="-1"></a>            <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="bu">len</span>(STRATEGIES)):</span>
+<span id="cb33-3"><a href="#cb33-3" aria-hidden="true" tabindex="-1"></a>                strat_weights[results[i][<span class="dv">1</span>]] <span class="op">+=</span> <span class="bu">len</span>(STRATEGIES) <span class="op">-</span> i</span></code></pre></div>
+<p>As an extra measure, we artificially bump up all of the strategies that were not used. This is done so that we do not forget about a strategy entirely. While one strategy may appear to perform badly in the beginning, later in the search it can prove quite useful.</p>
+<div class="sourceCode" id="cb34"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a>                <span class="co"># Additionally boost the unused strategies to avoid starvation</span></span>
+<span id="cb34-2"><a href="#cb34-2" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> results[i][<span class="dv">0</span>] <span class="op">==</span> <span class="dv">0</span>:</span>
+<span id="cb34-3"><a href="#cb34-3" aria-hidden="true" tabindex="-1"></a>                    strat_weights[results[i][<span class="dv">1</span>]] <span class="op">+=</span> <span class="bu">len</span>(STRATEGIES)</span></code></pre></div>
+<p>Finally, we output some information about the strategy ranking (if the <code>DEBUG_SWITCH</code> flag is set), and we reset the <code>strat_improvements</code> and <code>strat_time_spent</code> variables for the next interval.</p>
+<div class="sourceCode" id="cb35"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb35-1"><a href="#cb35-1" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> DEBUG_SWITCH:</span>
+<span id="cb35-2"><a href="#cb35-2" aria-hidden="true" tabindex="-1"></a>                <span class="bu">print</span> <span class="st">&quot;</span><span class="ch">\n</span><span class="st">Computing another switch...&quot;</span></span>
+<span id="cb35-3"><a href="#cb35-3" aria-hidden="true" tabindex="-1"></a>                <span class="bu">print</span> <span class="st">&quot;Best: </span><span class="sc">%s</span><span class="st"> (</span><span class="sc">%d</span><span class="st">)&quot;</span> <span class="op">%</span> (results[<span class="dv">0</span>][<span class="dv">1</span>].name, results[<span class="dv">0</span>][<span class="dv">0</span>])</span>
+<span id="cb35-4"><a href="#cb35-4" aria-hidden="true" tabindex="-1"></a>                <span class="bu">print</span> <span class="st">&quot;Worst: </span><span class="sc">%s</span><span class="st"> (</span><span class="sc">%d</span><span class="st">)&quot;</span> <span class="op">%</span> (results[<span class="op">-</span><span class="dv">1</span>][<span class="dv">1</span>].name, results[<span class="op">-</span><span class="dv">1</span>][<span class="dv">0</span>])</span>
+<span id="cb35-5"><a href="#cb35-5" aria-hidden="true" tabindex="-1"></a>                <span class="bu">print</span> results</span>
+<span id="cb35-6"><a href="#cb35-6" aria-hidden="true" tabindex="-1"></a>                <span class="bu">print</span> <span class="bu">sorted</span>([strat_weights[STRATEGIES[i]] </span>
+<span id="cb35-7"><a href="#cb35-7" aria-hidden="true" tabindex="-1"></a>                              <span class="cf">for</span> i <span class="kw">in</span> <span class="bu">range</span>(<span class="bu">len</span>(STRATEGIES))])</span>
+<span id="cb35-8"><a href="#cb35-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb35-9"><a href="#cb35-9" aria-hidden="true" tabindex="-1"></a>            strat_improvements <span class="op">=</span> {strategy: <span class="dv">0</span> <span class="cf">for</span> strategy <span class="kw">in</span> STRATEGIES}</span>
+<span id="cb35-10"><a href="#cb35-10" aria-hidden="true" tabindex="-1"></a>            strat_time_spent <span class="op">=</span> {strategy: <span class="dv">0</span> <span class="cf">for</span> strategy <span class="kw">in</span> STRATEGIES}</span></code></pre></div>
+<h2 id="discussion">Discussion</h2>
+<p>In this chapter we have seen what can be accomplished with a relatively small amount of code to solve the complex optimization problem of flow shop scheduling. Finding the best solution to a large optimization problem such as the flow shop can be difficult. In a case like this, we can turn to approximation techniques such as local search to compute a solution that is <em>good enough</em>. With local search we can move from one solution to another, aiming to find one of good quality.</p>
+<p>The general intuition behind local search can be applied to a wide range of problems. We focused on (1) generating a neighbourhood of related solutions to a problem from one candidate solution, and (2) establishing ways to evaluate and compare solutions. With these two components in hand, we can use the local search paradigm to find a valuable solution when the best option is simply too difficult to compute.</p>
+<p>Rather than using any one strategy to solve the problem, we saw how a strategy can be chosen dynamically to shift during the solving process. This simple and powerful technique gives the program the ability to mix and match partial strategies for the problem at hand, and it also means that the developer does not have to hand-tailor the strategy.</p>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

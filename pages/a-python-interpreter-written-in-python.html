@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="provenance" content="$Id: index.html 1472 2012-09-21 22:17:41Z audrey $" />
+    <link rel="stylesheet" href="/theme/css/bootstrap.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/bootstrap-responsive.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/code.css" type="text/css" />
+    <link rel="stylesheet" href="/theme/css/500L.css" type="text/css" />
+    <title>500 Lines or Less | A Python Interpreter Written in Python</title>
+    <script type="text/x-mathjax-config">
+        MathJax.Hub.Config({
+          tex2jax: {
+            inlineMath: [['$','$'], ['\\(','\\)']],
+            displayMath: [ ['$$','$$'], ["\\[","\\]"] ],
+          },
+        });
+    </script>
+    <script type="text/javascript" src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+    </script>
+</head>
+  <body>
+    <div class="container">
+      <div class="row">
+        <div class="hero-unit">
+	  <a class='pull-right' href='/en/index.html'></a>
+          <h1>A Python Interpreter Written in Python</h1>
+          <h2 class="author">Allison Kaptur</h2>
+          <blockquote class="pull-right">
+            </blockquote>
+
+        </div>
+      </div>
+      <div class="row">
+        <div class='span10 offset1' id='content'>
+          <p><em>Allison is an engineer at Dropbox, where she helps maintain one of the largest networks of Python clients in the world. Before Dropbox, she was a facilitator at the Recurse Center, a writers retreat for programmers in New York. She’s spoken at PyCon North America about Python internals and loves weird bugs. She blogs at <a href="http://akaptur.com">akaptur.com</a>.</em></p>
+<p><em>(This chapter is also available in <a href="http://qingyunha.github.io/taotao/">Simplified Chinese</a>)</em>.</p>
+<h2 id="introduction">Introduction</h2>
+<p>Byterun is a Python interpreter implemented in Python. Through my work on Byterun, I was surprised and delighted to discover that the fundamental structure of the Python interpreter fits easily into the 500-line size restriction. This chapter will walk through the structure of the interpreter and give you enough context to explore it further. The goal is not to explain everything there is to know about interpreters—like so many interesting areas of programming and computer science, you could devote years to developing a deep understanding of the topic.</p>
+<p>Byterun was written by Ned Batchelder and myself, building on the work of Paul Swartz. Its structure is similar to the primary implementation of Python, CPython, so understanding Byterun will help you understand interpreters in general and the CPython interpreter in particular. (If you don’t know which Python you’re using, it’s probably CPython.) Despite its short length, Byterun is capable of running most simple Python programs<a href="#fn1" class="footnote-ref" id="fnref1" role="doc-noteref"><sup>1</sup></a>.</p>
+<h3 id="a-python-interpreter">A Python Interpreter</h3>
+<p>Before we begin, let’s narrow down what we mean by “a Python interpreter”. The word “interpreter” can be used in a variety of different ways when discussing Python. Sometimes interpreter refers to the Python REPL, the interactive prompt you get by typing <code>python</code> at the command line. Sometimes people use “the Python interpreter” more or less interchangeably with “Python” to talk about executing Python code from start to finish. In this chapter, “interpreter” has a more narrow meaning: it’s the last step in the process of executing a Python program.</p>
+<p>Before the interpreter takes over, Python performs three other steps: lexing, parsing, and compiling. Together, these steps transform the programmer’s source code from lines of text into structured <em>code objects</em> containing instructions that the interpreter can understand. The interpreter’s job is to take these code objects and follow the instructions.</p>
+<p>You may be surprised to hear that compiling is a step in executing Python code at all. Python is often called an “interpreted” language like Ruby or Perl, as opposed to a “compiled” language like C or Rust. However, this terminology isn’t as precise as it may seem. Most interpreted languages, including Python, do involve a compilation step. The reason Python is called “interpreted” is that the compilation step does relatively less work (and the interpreter does relatively more) than in a compiled language. As we’ll see later in the chapter, the Python compiler has much less information about the behavior of a program than a C compiler does.</p>
+<h3 id="a-python-python-interpreter">A Python Python Interpreter</h3>
+<p>Byterun is a Python interpreter written in Python. This may strike you as odd, but it’s no more odd than writing a C compiler in C. (Indeed, the widely used C compiler gcc is written in C.) You could write a Python interpreter in almost any language.</p>
+<p>Writing a Python interpreter in Python has both advantages and disadvantages. The biggest disadvantage is speed: executing code via Byterun is much slower than executing it in CPython, where the interpreter is written in C and carefully optimized. However, Byterun was designed originally as a learning exercise, so speed is not important to us. The biggest advantage to using Python is that we can more easily implement <em>just</em> the interpreter, and not the rest of the Python run-time, particularly the object system. For example, Byterun can fall back to “real” Python when it needs to create a class. Another advantage is that Byterun is easy to understand, partly because it’s written in a high-level language (Python!) that many people find easy to read. (We also exclude interpreter optimizations in Byterun—once again favoring clarity and simplicity over speed.)</p>
+<h2 id="building-an-interpreter">Building an Interpreter</h2>
+<p>Before we start to look at the code of Byterun, we need some higher-level context on the structure of the interpreter. How does the Python interpreter work?</p>
+<p>The Python interpreter is a <em>virtual machine</em>, meaning that it is software that emulates a physical computer. This particular virtual machine is a stack machine: it manipulates several stacks to perform its operations (as contrasted with a register machine, which writes to and reads from particular memory locations).</p>
+<p>The Python interpreter is a <em>bytecode interpreter</em>: its input is instruction sets called <em>bytecode</em>. When you write Python, the lexer, parser, and compiler generate code objects for the interpreter to operate on. Each code object contains a set of instructions to be executed—that’s the bytecode—plus other information that the interpreter will need. Bytecode is an <em>intermediate representation</em> of Python code: it expresses the source code that you wrote in a way the interpreter can understand. It’s analogous to the way that assembly language serves as an intermediate representation between C code and a piece of hardware.</p>
+<h3 id="a-tiny-interpreter">A Tiny Interpreter</h3>
+<p>To make this concrete, let’s start with a very minimal interpreter. This interpreter can only add numbers, and it understands just three instructions. All code it can execute consists of these three instructions in different combinations. The three instructions are these:</p>
+<ul>
+<li><code>LOAD_VALUE</code></li>
+<li><code>ADD_TWO_VALUES</code></li>
+<li><code>PRINT_ANSWER</code></li>
+</ul>
+<p>Since we’re not concerned with the lexer, parser, and compiler in this chapter, it doesn’t matter how the instruction sets are produced. You can imagine writing <code>7 + 5</code> and having a compiler emit a combination of these three instructions. Or, if you have the right compiler, you can write Lisp syntax that’s turned into the same combination of instructions. The interpreter doesn’t care. All that matters is that our interpreter is given a well-formed arrangement of the instructions.</p>
+<p>Suppose that</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="dv">7</span> <span class="op">+</span> <span class="dv">5</span></span></code></pre></div>
+<p>produces this instruction set:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>what_to_execute <span class="op">=</span> {</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;instructions&quot;</span>: [(<span class="st">&quot;LOAD_VALUE&quot;</span>, <span class="dv">0</span>),  <span class="co"># the first number</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>                     (<span class="st">&quot;LOAD_VALUE&quot;</span>, <span class="dv">1</span>),  <span class="co"># the second number</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>                     (<span class="st">&quot;ADD_TWO_VALUES&quot;</span>, <span class="va">None</span>),</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>                     (<span class="st">&quot;PRINT_ANSWER&quot;</span>, <span class="va">None</span>)],</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    <span class="st">&quot;numbers&quot;</span>: [<span class="dv">7</span>, <span class="dv">5</span>] }</span></code></pre></div>
+<p>The Python interpreter is a <em>stack machine</em>, so it must manipulate stacks to add two numbers (<a href="#figure-11.1">Figure 11.1</a>.) The interpreter will begin by executing the first instruction, <code>LOAD_VALUE</code>, and pushing the first number onto the stack. Next it will push the second number onto the stack. For the third instruction, <code>ADD_TWO_VALUES</code>, it will pop both numbers off, add them together, and push the result onto the stack. Finally, it will pop the answer back off the stack and print it.</p>
+<div class="center figure">
+<a name="figure-11.1"></a><img src="interpreter-images/interpreter-stack.png" alt="Figure 11.1 - A stack machine" title="Figure 11.1 - A stack machine" />
+</div>
+<p class="center figcaption">
+<small>Figure 11.1 - A stack machine</small>
+</p>
+<p>The <code>LOAD_VALUE</code> instruction tells the interpreter to push a number on to the stack, but the instruction alone doesn’t specify which number. Each instruction needs an extra piece of information, telling the interpreter where to find the number to load. So our instruction set has two pieces: the instructions themselves, plus a list of constants the instructions will need. (In Python, what we’re calling “instructions” is the bytecode, and the “what to execute” object below is the <em>code object</em>.)</p>
+<p>Why not just put the numbers directly in the instructions? Imagine if we were adding strings together instead of numbers. We wouldn’t want to have the strings stuffed in with the instructions, since they could be arbitrarily large. This design also means we can have just one copy of each object that we need, so for example to add <code>7 + 7</code>, <code>"numbers"</code> could be just <code>[7]</code>.</p>
+<p>You may be wondering why instructions other than <code>ADD_TWO_VALUES</code> were needed at all. Indeed, for the simple case of adding two numbers, the example is a little contrived. However, this instruction is a building block for more complex programs. For example, with just the instructions we’ve defined so far, we can already add together three values—or any number of values—given the right set of these instructions. The stack provides a clean way to keep track of the state of the interpreter, and it will support more complexity as we go along.</p>
+<p>Now let’s start to write the interpreter itself. The interpreter object has a stack, which we’ll represent with a list. The object also has a method describing how to execute each instruction. For example, for <code>LOAD_VALUE</code>, the interpreter will push the value onto the stack.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Interpreter:</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>):</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.stack <span class="op">=</span> []</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> LOAD_VALUE(<span class="va">self</span>, number):</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.stack.append(number)</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> PRINT_ANSWER(<span class="va">self</span>):</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>        answer <span class="op">=</span> <span class="va">self</span>.stack.pop()</span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>        <span class="bu">print</span>(answer)</span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> ADD_TWO_VALUES(<span class="va">self</span>):</span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>        first_num <span class="op">=</span> <span class="va">self</span>.stack.pop()</span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>        second_num <span class="op">=</span> <span class="va">self</span>.stack.pop()</span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>        total <span class="op">=</span> first_num <span class="op">+</span> second_num</span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.stack.append(total)</span></code></pre></div>
+<p>These three functions implement the three instructions our interpreter understands. The interpreter needs one more piece: a way to tie everything together and actually execute it. This method, <code>run_code</code>, takes the <code>what_to_execute</code> dictionary defined above as an argument. It loops over each instruction, processes the arguments to that instruction if there are any, and then calls the corresponding method on the interpreter object.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> run_code(<span class="va">self</span>, what_to_execute):</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>        instructions <span class="op">=</span> what_to_execute[<span class="st">&quot;instructions&quot;</span>]</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>        numbers <span class="op">=</span> what_to_execute[<span class="st">&quot;numbers&quot;</span>]</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> each_step <span class="kw">in</span> instructions:</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>            instruction, argument <span class="op">=</span> each_step</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> instruction <span class="op">==</span> <span class="st">&quot;LOAD_VALUE&quot;</span>:</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>                number <span class="op">=</span> numbers[argument]</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.LOAD_VALUE(number)</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> instruction <span class="op">==</span> <span class="st">&quot;ADD_TWO_VALUES&quot;</span>:</span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.ADD_TWO_VALUES()</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> instruction <span class="op">==</span> <span class="st">&quot;PRINT_ANSWER&quot;</span>:</span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.PRINT_ANSWER()</span></code></pre></div>
+<p>To test it out, we can create an instance of the object and then call the <code>run_code</code> method with the instruction set for adding 7 + 5 defined above.</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>    interpreter <span class="op">=</span> Interpreter()</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    interpreter.run_code(what_to_execute)</span></code></pre></div>
+<p>Sure enough, it prints the answer: 12.</p>
+<p>Although this interpreter is quite limited, this process is almost exactly how the real Python interpreter adds numbers. There are a couple of things to note even in this small example.</p>
+<p>First of all, some instructions need arguments. In real Python bytecode, about half of instructions have arguments. The arguments are packed in with the instructions, much like in our example. Notice that the arguments to the <em>instructions</em> are different than the arguments to the methods that are called.</p>
+<p>Second, notice that the instruction for <code>ADD_TWO_VALUES</code> did not require any arguments. Instead, the values to be added together were popped off the interpreter’s stack. This is the defining feature of a stack-based interpreter.</p>
+<p>Remember that given valid instruction sets, without any changes to our interpreter, we can add more than two numbers at a time. Consider the instruction set below. What do you expect to happen? If you had a friendly compiler, what code could you write to generate this instruction set? </p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>    what_to_execute <span class="op">=</span> {</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;instructions&quot;</span>: [(<span class="st">&quot;LOAD_VALUE&quot;</span>, <span class="dv">0</span>),</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>                         (<span class="st">&quot;LOAD_VALUE&quot;</span>, <span class="dv">1</span>),</span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>                         (<span class="st">&quot;ADD_TWO_VALUES&quot;</span>, <span class="va">None</span>),</span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>                         (<span class="st">&quot;LOAD_VALUE&quot;</span>, <span class="dv">2</span>),</span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>                         (<span class="st">&quot;ADD_TWO_VALUES&quot;</span>, <span class="va">None</span>),</span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>                         (<span class="st">&quot;PRINT_ANSWER&quot;</span>, <span class="va">None</span>)],</span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;numbers&quot;</span>: [<span class="dv">7</span>, <span class="dv">5</span>, <span class="dv">8</span>] }</span></code></pre></div>
+<p>At this point, we can begin to see how this structure is extensible: we can add methods on the interpreter object that describe many more operations (as long as we have a compiler to hand us well-formed instruction sets).</p>
+<h4 id="variables">Variables</h4>
+<p>Next let’s add variables to our interpreter. Variables require an instruction for storing the value of a variable, <code>STORE_NAME</code>; an instruction for retrieving it, <code>LOAD_NAME</code>; and a mapping from variable names to values. For now, we’ll ignore namespaces and scoping, so we can store the variable mapping on the interpreter object itself. Finally, we’ll have to make sure that <code>what_to_execute</code> has a list of the variable names, in addition to its list of constants.</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="kw">def</span> s():</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>...     a <span class="op">=</span> <span class="dv">1</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>...     b <span class="op">=</span> <span class="dv">2</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>...     <span class="bu">print</span>(a <span class="op">+</span> b)</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="co"># a friendly compiler transforms `s` into:</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    what_to_execute <span class="op">=</span> {</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;instructions&quot;</span>: [(<span class="st">&quot;LOAD_VALUE&quot;</span>, <span class="dv">0</span>),</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>                         (<span class="st">&quot;STORE_NAME&quot;</span>, <span class="dv">0</span>),</span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>                         (<span class="st">&quot;LOAD_VALUE&quot;</span>, <span class="dv">1</span>),</span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>                         (<span class="st">&quot;STORE_NAME&quot;</span>, <span class="dv">1</span>),</span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a>                         (<span class="st">&quot;LOAD_NAME&quot;</span>, <span class="dv">0</span>),</span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>                         (<span class="st">&quot;LOAD_NAME&quot;</span>, <span class="dv">1</span>),</span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a>                         (<span class="st">&quot;ADD_TWO_VALUES&quot;</span>, <span class="va">None</span>),</span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a>                         (<span class="st">&quot;PRINT_ANSWER&quot;</span>, <span class="va">None</span>)],</span>
+<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;numbers&quot;</span>: [<span class="dv">1</span>, <span class="dv">2</span>],</span>
+<span id="cb7-16"><a href="#cb7-16" aria-hidden="true" tabindex="-1"></a>        <span class="st">&quot;names&quot;</span>:   [<span class="st">&quot;a&quot;</span>, <span class="st">&quot;b&quot;</span>] }</span></code></pre></div>
+<p>Our new implementation is below. To keep track of what names are bound to what values, we’ll add an <code>environment</code> dictionary to the <code>__init__</code> method. We’ll also add <code>STORE_NAME</code> and <code>LOAD_NAME</code>. These methods first look up the variable name in question and then use the dictionary to store or retrieve its value.</p>
+<p>The arguments to an instruction can now mean two different things: They can either be an index into the “numbers” list, or they can be an index into the “names” list. The interpreter knows which it should be by checking what instruction it’s executing. We’ll break out this logic—and the mapping of instructions to what their arguments mean—into a separate method. </p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Interpreter:</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>):</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.stack <span class="op">=</span> []</span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.environment <span class="op">=</span> {}</span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> STORE_NAME(<span class="va">self</span>, name):</span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>        val <span class="op">=</span> <span class="va">self</span>.stack.pop()</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.environment[name] <span class="op">=</span> val</span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> LOAD_NAME(<span class="va">self</span>, name):</span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>        val <span class="op">=</span> <span class="va">self</span>.environment[name]</span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.stack.append(val)</span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> parse_argument(<span class="va">self</span>, instruction, argument, what_to_execute):</span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Understand what the argument to each instruction means.&quot;&quot;&quot;</span></span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a>        numbers <span class="op">=</span> [<span class="st">&quot;LOAD_VALUE&quot;</span>]</span>
+<span id="cb8-17"><a href="#cb8-17" aria-hidden="true" tabindex="-1"></a>        names <span class="op">=</span> [<span class="st">&quot;LOAD_NAME&quot;</span>, <span class="st">&quot;STORE_NAME&quot;</span>]</span>
+<span id="cb8-18"><a href="#cb8-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-19"><a href="#cb8-19" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> instruction <span class="kw">in</span> numbers:</span>
+<span id="cb8-20"><a href="#cb8-20" aria-hidden="true" tabindex="-1"></a>            argument <span class="op">=</span> what_to_execute[<span class="st">&quot;numbers&quot;</span>][argument]</span>
+<span id="cb8-21"><a href="#cb8-21" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> instruction <span class="kw">in</span> names:</span>
+<span id="cb8-22"><a href="#cb8-22" aria-hidden="true" tabindex="-1"></a>            argument <span class="op">=</span> what_to_execute[<span class="st">&quot;names&quot;</span>][argument]</span>
+<span id="cb8-23"><a href="#cb8-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-24"><a href="#cb8-24" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> argument</span>
+<span id="cb8-25"><a href="#cb8-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-26"><a href="#cb8-26" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> run_code(<span class="va">self</span>, what_to_execute):</span>
+<span id="cb8-27"><a href="#cb8-27" aria-hidden="true" tabindex="-1"></a>        instructions <span class="op">=</span> what_to_execute[<span class="st">&quot;instructions&quot;</span>]</span>
+<span id="cb8-28"><a href="#cb8-28" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> each_step <span class="kw">in</span> instructions:</span>
+<span id="cb8-29"><a href="#cb8-29" aria-hidden="true" tabindex="-1"></a>            instruction, argument <span class="op">=</span> each_step</span>
+<span id="cb8-30"><a href="#cb8-30" aria-hidden="true" tabindex="-1"></a>            argument <span class="op">=</span> <span class="va">self</span>.parse_argument(instruction, argument, what_to_execute)</span>
+<span id="cb8-31"><a href="#cb8-31" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-32"><a href="#cb8-32" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> instruction <span class="op">==</span> <span class="st">&quot;LOAD_VALUE&quot;</span>:</span>
+<span id="cb8-33"><a href="#cb8-33" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.LOAD_VALUE(argument)</span>
+<span id="cb8-34"><a href="#cb8-34" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> instruction <span class="op">==</span> <span class="st">&quot;ADD_TWO_VALUES&quot;</span>:</span>
+<span id="cb8-35"><a href="#cb8-35" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.ADD_TWO_VALUES()</span>
+<span id="cb8-36"><a href="#cb8-36" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> instruction <span class="op">==</span> <span class="st">&quot;PRINT_ANSWER&quot;</span>:</span>
+<span id="cb8-37"><a href="#cb8-37" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.PRINT_ANSWER()</span>
+<span id="cb8-38"><a href="#cb8-38" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> instruction <span class="op">==</span> <span class="st">&quot;STORE_NAME&quot;</span>:</span>
+<span id="cb8-39"><a href="#cb8-39" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.STORE_NAME(argument)</span>
+<span id="cb8-40"><a href="#cb8-40" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> instruction <span class="op">==</span> <span class="st">&quot;LOAD_NAME&quot;</span>:</span>
+<span id="cb8-41"><a href="#cb8-41" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.LOAD_NAME(argument)</span></code></pre></div>
+<p>Even with just five instructions, the <code>run_code</code> method is starting to get tedious. If we kept this structure, we’d need one branch of the <code>if</code> statement for each instruction. Here, we can make use of Python’s dynamic method lookup. We’ll always define a method called <code>FOO</code> to execute the instruction called <code>FOO</code>, so we can use Python’s <code>getattr</code> function to look up the method on the fly instead of using the big <code>if</code> statement. The <code>run_code</code> method then looks like this: </p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> execute(<span class="va">self</span>, what_to_execute):</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>        instructions <span class="op">=</span> what_to_execute[<span class="st">&quot;instructions&quot;</span>]</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> each_step <span class="kw">in</span> instructions:</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>            instruction, argument <span class="op">=</span> each_step</span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>            argument <span class="op">=</span> <span class="va">self</span>.parse_argument(instruction, argument, what_to_execute)</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>            bytecode_method <span class="op">=</span> <span class="bu">getattr</span>(<span class="va">self</span>, instruction)</span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> argument <span class="kw">is</span> <span class="va">None</span>:</span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>                bytecode_method()</span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>            <span class="cf">else</span>:</span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>                bytecode_method(argument)</span></code></pre></div>
+<h2 id="real-python-bytecode">Real Python Bytecode</h2>
+<p>At this point, we’ll abandon our toy instruction sets and switch to real Python bytecode. The structure of bytecode is similar to our toy interpreter’s verbose instruction sets, except that it uses one byte instead of a long name to identify each instruction. To understand this structure, we’ll walk through the bytecode of a short function. Consider the example below:</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="kw">def</span> cond():</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>...     x <span class="op">=</span> <span class="dv">3</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>...     <span class="cf">if</span> x <span class="op">&lt;</span> <span class="dv">5</span>:</span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>...         <span class="cf">return</span> <span class="st">&#39;yes&#39;</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>...     <span class="cf">else</span>:</span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>...         <span class="cf">return</span> <span class="st">&#39;no&#39;</span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>...</span></code></pre></div>
+<p>Python exposes a boatload of its internals at run time, and we can access them right from the REPL. For the function object <code>cond</code>, <code>cond.__code__</code> is the code object associated it, and <code>cond.__code__.co_code</code> is the bytecode. There’s almost never a good reason to use these attributes directly when you’re writing Python code, but they do allow us to get up to all sorts of mischief—and to look at the internals in order to understand them.</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> cond.__code__.co_code  <span class="co"># the bytecode as raw bytes</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>b<span class="st">&#39;d</span><span class="ch">\x01\x00</span><span class="st">}</span><span class="ch">\x00\x00</span><span class="st">|</span><span class="ch">\x00\x00d\x02\x00</span><span class="st">k</span><span class="ch">\x00\x00</span><span class="st">r</span><span class="ch">\x16\x00d\x03\x00</span><span class="st">Sd</span><span class="ch">\x04\x00</span><span class="st">Sd</span><span class="ch">\x00</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="st">   </span><span class="ch">\x00</span><span class="st">S&#39;</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="bu">list</span>(cond.__code__.co_code)  <span class="co"># the bytecode as numbers</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>[<span class="dv">100</span>, <span class="dv">1</span>, <span class="dv">0</span>, <span class="dv">125</span>, <span class="dv">0</span>, <span class="dv">0</span>, <span class="dv">124</span>, <span class="dv">0</span>, <span class="dv">0</span>, <span class="dv">100</span>, <span class="dv">2</span>, <span class="dv">0</span>, <span class="dv">107</span>, <span class="dv">0</span>, <span class="dv">0</span>, <span class="dv">114</span>, <span class="dv">22</span>, <span class="dv">0</span>, <span class="dv">100</span>, <span class="dv">3</span>, <span class="dv">0</span>, <span class="dv">83</span>, </span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a> <span class="dv">100</span>, <span class="dv">4</span>, <span class="dv">0</span>, <span class="dv">83</span>, <span class="dv">100</span>, <span class="dv">0</span>, <span class="dv">0</span>, <span class="dv">83</span>]</span></code></pre></div>
+<p>When we just print the bytecode, it looks unintelligible—all we can tell is that it’s a series of bytes. Luckily, there’s a powerful tool we can use to understand it: the <code>dis</code> module in the Python standard library.</p>
+<p><code>dis</code> is a bytecode disassembler. A disassembler takes low-level code that is written for machines, like assembly code or bytecode, and prints it in a human-readable way. When we run <code>dis.dis</code>, it outputs an explanation of the bytecode it has passed. </p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> dis.dis(cond)</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>  <span class="dv">2</span>           <span class="dv">0</span> LOAD_CONST               <span class="dv">1</span> (<span class="dv">3</span>)</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>              <span class="dv">3</span> STORE_FAST               <span class="dv">0</span> (x)</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>  <span class="dv">3</span>           <span class="dv">6</span> LOAD_FAST                <span class="dv">0</span> (x)</span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>              <span class="dv">9</span> LOAD_CONST               <span class="dv">2</span> (<span class="dv">5</span>)</span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>             <span class="dv">12</span> COMPARE_OP               <span class="dv">0</span> (<span class="op">&lt;</span>)</span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>             <span class="dv">15</span> POP_JUMP_IF_FALSE       <span class="dv">22</span></span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a>  <span class="dv">4</span>          <span class="dv">18</span> LOAD_CONST               <span class="dv">3</span> (<span class="st">&#39;yes&#39;</span>)</span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a>             <span class="dv">21</span> RETURN_VALUE</span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a>  <span class="dv">6</span>     <span class="op">&gt;&gt;</span>   <span class="dv">22</span> LOAD_CONST               <span class="dv">4</span> (<span class="st">&#39;no&#39;</span>)</span>
+<span id="cb12-14"><a href="#cb12-14" aria-hidden="true" tabindex="-1"></a>             <span class="dv">25</span> RETURN_VALUE</span>
+<span id="cb12-15"><a href="#cb12-15" aria-hidden="true" tabindex="-1"></a>             <span class="dv">26</span> LOAD_CONST               <span class="dv">0</span> (<span class="va">None</span>)</span>
+<span id="cb12-16"><a href="#cb12-16" aria-hidden="true" tabindex="-1"></a>             <span class="dv">29</span> RETURN_VALUE</span></code></pre></div>
+<p>What does all this mean? Let’s look at the first instruction <code>LOAD_CONST</code> as an example. The number in the first column (<code>2</code>) shows the line number in our Python source code. The second column is an index into the bytecode, telling us that the <code>LOAD_CONST</code> instruction appears at position zero. The third column is the instruction itself, mapped to its human-readable name. The fourth column, when present, is the argument to that instruction. The fifth column, when present, is a hint about what the argument means.</p>
+<p>Consider the first few bytes of this bytecode: [100, 1, 0, 125, 0, 0]. These six bytes represent two instructions with their arguments. We can use <code>dis.opname</code>, a mapping from bytes to intelligible strings, to find out what instructions 100 and 125 map to:</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> dis.opname[<span class="dv">100</span>]</span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="co">&#39;LOAD_CONST&#39;</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> dis.opname[<span class="dv">125</span>]</span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a><span class="co">&#39;STORE_FAST&#39;</span></span></code></pre></div>
+<p>The second and third bytes—1, 0—are arguments to <code>LOAD_CONST</code>, while the fifth and sixth bytes—0, 0—are arguments to <code>STORE_FAST</code>. Just like in our toy example, <code>LOAD_CONST</code> needs to know where to find its constant to load, and <code>STORE_FAST</code> needs to find the name to store. (Python’s <code>LOAD_CONST</code> is the same as our toy interpreter’s <code>LOAD_VALUE</code>, and <code>LOAD_FAST</code> is the same as <code>LOAD_NAME</code>.) So these six bytes represent the first line of code, <code>x = 3</code>. (Why use two bytes for each argument? If Python used just one byte to locate constants and names instead of two, you could only have 256 names/constants associated with a single code object. Using two bytes, you can have up to 256 squared, or 65,536.)</p>
+<h3 id="conditionals-and-loops">Conditionals and Loops</h3>
+<p>So far, the interpreter has executed code simply by stepping through the instructions one by one. This is a problem; often, we want to execute certain instructions many times, or skip them under certain conditions. To allow us to write loops and if statements in our code, the interpreter must be able to jump around in the instruction set. In a sense, Python handles loops and conditionals with <code>GOTO</code> statements in the bytecode! Look at the disassembly of the function <code>cond</code> again: </p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> dis.dis(cond)</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>  <span class="dv">2</span>           <span class="dv">0</span> LOAD_CONST               <span class="dv">1</span> (<span class="dv">3</span>)</span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>              <span class="dv">3</span> STORE_FAST               <span class="dv">0</span> (x)</span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a>  <span class="dv">3</span>           <span class="dv">6</span> LOAD_FAST                <span class="dv">0</span> (x)</span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>              <span class="dv">9</span> LOAD_CONST               <span class="dv">2</span> (<span class="dv">5</span>)</span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a>             <span class="dv">12</span> COMPARE_OP               <span class="dv">0</span> (<span class="op">&lt;</span>)</span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a>             <span class="dv">15</span> POP_JUMP_IF_FALSE       <span class="dv">22</span></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a>  <span class="dv">4</span>          <span class="dv">18</span> LOAD_CONST               <span class="dv">3</span> (<span class="st">&#39;yes&#39;</span>)</span>
+<span id="cb14-11"><a href="#cb14-11" aria-hidden="true" tabindex="-1"></a>             <span class="dv">21</span> RETURN_VALUE</span>
+<span id="cb14-12"><a href="#cb14-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-13"><a href="#cb14-13" aria-hidden="true" tabindex="-1"></a>  <span class="dv">6</span>     <span class="op">&gt;&gt;</span>   <span class="dv">22</span> LOAD_CONST               <span class="dv">4</span> (<span class="st">&#39;no&#39;</span>)</span>
+<span id="cb14-14"><a href="#cb14-14" aria-hidden="true" tabindex="-1"></a>             <span class="dv">25</span> RETURN_VALUE</span>
+<span id="cb14-15"><a href="#cb14-15" aria-hidden="true" tabindex="-1"></a>             <span class="dv">26</span> LOAD_CONST               <span class="dv">0</span> (<span class="va">None</span>)</span>
+<span id="cb14-16"><a href="#cb14-16" aria-hidden="true" tabindex="-1"></a>             <span class="dv">29</span> RETURN_VALUE</span></code></pre></div>
+<p>The conditional <code>if x &lt; 5</code> on line 3 of the code is compiled into four instructions: <code>LOAD_FAST</code>, <code>LOAD_CONST</code>, <code>COMPARE_OP</code>, and <code>POP_JUMP_IF_FALSE</code>. <code>x &lt; 5</code> generates code to load <code>x</code>, load 5, and compare the two values. The instruction <code>POP_JUMP_IF_FALSE</code> is responsible for implementing the <code>if</code>. This instruction will pop the top value off the interpreter’s stack. If the value is true, then nothing happens. (The value can be “truthy”—it doesn’t have to be the literal <code>True</code> object.) If the value is false, then the interpreter will jump to another instruction.</p>
+<p>The instruction to land on is called the jump target, and it’s provided as the argument to the <code>POP_JUMP</code> instruction. Here, the jump target is 22. The instruction at index 22 is <code>LOAD_CONST</code> on line 6. (<code>dis</code> marks jump targets with <code>&gt;&gt;</code>.) If the result of <code>x &lt; 5</code> is False, then the interpreter will jump straight to line 6 (<code>return "no"</code>), skipping line 4 (<code>return "yes"</code>). Thus, the interpreter uses jump instructions to selectively skip over parts of the instruction set.</p>
+<p>Python loops also rely on jumping. In the bytecode below, notice that the line <code>while x &lt; 5</code> generates almost identical bytecode to <code>if x &lt; 10</code>. In both cases, the comparison is calculated and then <code>POP_JUMP_IF_FALSE</code> controls which instruction is executed next. At the end of line 4—the end of the loop’s body—the instruction <code>JUMP_ABSOLUTE</code> always sends the interpreter back to instruction 9 at the top of the loop. When x &lt; 5 becomes false, then <code>POP_JUMP_IF_FALSE</code> jumps the interpreter past the end of the loop, to instruction 34.</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="kw">def</span> loop():</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>...      x <span class="op">=</span> <span class="dv">1</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>...      <span class="cf">while</span> x <span class="op">&lt;</span> <span class="dv">5</span>:</span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>...          x <span class="op">=</span> x <span class="op">+</span> <span class="dv">1</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>...      <span class="cf">return</span> x</span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>...</span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> dis.dis(loop)</span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>  <span class="dv">2</span>           <span class="dv">0</span> LOAD_CONST               <span class="dv">1</span> (<span class="dv">1</span>)</span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a>              <span class="dv">3</span> STORE_FAST               <span class="dv">0</span> (x)</span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a>  <span class="dv">3</span>           <span class="dv">6</span> SETUP_LOOP              <span class="dv">26</span> (to <span class="dv">35</span>)</span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a>        <span class="op">&gt;&gt;</span>    <span class="dv">9</span> LOAD_FAST                <span class="dv">0</span> (x)</span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a>             <span class="dv">12</span> LOAD_CONST               <span class="dv">2</span> (<span class="dv">5</span>)</span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a>             <span class="dv">15</span> COMPARE_OP               <span class="dv">0</span> (<span class="op">&lt;</span>)</span>
+<span id="cb15-15"><a href="#cb15-15" aria-hidden="true" tabindex="-1"></a>             <span class="dv">18</span> POP_JUMP_IF_FALSE       <span class="dv">34</span></span>
+<span id="cb15-16"><a href="#cb15-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-17"><a href="#cb15-17" aria-hidden="true" tabindex="-1"></a>  <span class="dv">4</span>          <span class="dv">21</span> LOAD_FAST                <span class="dv">0</span> (x)</span>
+<span id="cb15-18"><a href="#cb15-18" aria-hidden="true" tabindex="-1"></a>             <span class="dv">24</span> LOAD_CONST               <span class="dv">1</span> (<span class="dv">1</span>)</span>
+<span id="cb15-19"><a href="#cb15-19" aria-hidden="true" tabindex="-1"></a>             <span class="dv">27</span> BINARY_ADD</span>
+<span id="cb15-20"><a href="#cb15-20" aria-hidden="true" tabindex="-1"></a>             <span class="dv">28</span> STORE_FAST               <span class="dv">0</span> (x)</span>
+<span id="cb15-21"><a href="#cb15-21" aria-hidden="true" tabindex="-1"></a>             <span class="dv">31</span> JUMP_ABSOLUTE            <span class="dv">9</span></span>
+<span id="cb15-22"><a href="#cb15-22" aria-hidden="true" tabindex="-1"></a>        <span class="op">&gt;&gt;</span>   <span class="dv">34</span> POP_BLOCK</span>
+<span id="cb15-23"><a href="#cb15-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-24"><a href="#cb15-24" aria-hidden="true" tabindex="-1"></a>  <span class="dv">5</span>     <span class="op">&gt;&gt;</span>   <span class="dv">35</span> LOAD_FAST                <span class="dv">0</span> (x)</span>
+<span id="cb15-25"><a href="#cb15-25" aria-hidden="true" tabindex="-1"></a>             <span class="dv">38</span> RETURN_VALUE</span></code></pre></div>
+<h3 id="explore-bytecode">Explore Bytecode</h3>
+<p>I encourage you to try running <code>dis.dis</code> on functions you write. Some questions to explore:</p>
+<ul>
+<li>What’s the difference between a for loop and a while loop to the Python interpreter?</li>
+<li>How can you write different functions that generate identical bytecode?</li>
+<li>How does <code>elif</code> work? What about list comprehensions?</li>
+</ul>
+<h2 id="frames">Frames</h2>
+<p>So far, we’ve learned that the Python virtual machine is a stack machine. It steps and jumps through instructions, pushing and popping values on and off a stack. There are still some gaps in our mental model, though. In the examples above, the last instruction is <code>RETURN_VALUE</code>, which corresponds to the <code>return</code> statement in the code. But where does the instruction return to?</p>
+<p>To answer this question, we must add a layer of complexity: the frame. A frame is a collection of information and context for a chunk of code. Frames are created and destroyed on the fly as your Python code executes. There’s one frame corresponding to each <em>call</em> of a function—so while each frame has one code object associated with it, a code object can have many frames. If you had a function that called itself recursively ten times, you’d have eleven frames—one for each level of recursion and one for the module you started from. In general, there’s a frame for each scope in a Python program. For example, each module, each function call, and each class definition has a frame.</p>
+<p>Frames live on the <em>call stack</em>, a completely different stack from the one we’ve been discussing so far. (The call stack is the stack you’re most familiar with already—you’ve seen it printed out in the tracebacks of exceptions. Each line in a traceback starting with “File ‘program.py’, line 10” corresponds to one frame on the call stack.) The stack we’ve been examining—the one the interpreter is manipulating while it executes bytecode—we’ll call the <em>data stack</em>. There’s also a third stack, called the <em>block stack</em>. Blocks are used for certain kinds of control flow, particularly looping and exception handling. Each frame on the call stack has its own data stack and block stack.</p>
+<p>Let’s make this concrete with an example. Suppose the Python interpreter is currently executing the line marked 3 below. The interpreter is in the middle of a call to <code>foo</code>, which is in turn calling <code>bar</code>. The diagram shows a schematic of the call stack of frames, the block stacks, and the data stacks. (This code is written like a REPL session, so we’ve first defined the needed functions.) At the moment we’re interested in, the interpreter is executing <code>foo()</code>, at the bottom, which then reaches in to the body of <code>foo</code> and then up into <code>bar</code>. </p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="kw">def</span> bar(y):</span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>...     z <span class="op">=</span> y <span class="op">+</span> <span class="dv">3</span>     <span class="co"># &lt;--- (3) ... and the interpreter is here.</span></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>...     <span class="cf">return</span> z</span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>...</span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="kw">def</span> foo():</span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>...     a <span class="op">=</span> <span class="dv">1</span></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a>...     b <span class="op">=</span> <span class="dv">2</span></span>
+<span id="cb16-8"><a href="#cb16-8" aria-hidden="true" tabindex="-1"></a>...     <span class="cf">return</span> a <span class="op">+</span> bar(b) <span class="co"># &lt;--- (2) ... which is returning a call to bar ...</span></span>
+<span id="cb16-9"><a href="#cb16-9" aria-hidden="true" tabindex="-1"></a>...</span>
+<span id="cb16-10"><a href="#cb16-10" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> foo()             <span class="co"># &lt;--- (1) We&#39;re in the middle of a call to foo ...</span></span>
+<span id="cb16-11"><a href="#cb16-11" aria-hidden="true" tabindex="-1"></a><span class="dv">3</span></span></code></pre></div>
+<div class="center figure">
+<a name="figure-11.2"></a><img src="interpreter-images/interpreter-callstack.png" alt="Figure 11.2 - The call stack" title="Figure 11.2 - The call stack" />
+</div>
+<p class="center figcaption">
+<small>Figure 11.2 - The call stack</small>
+</p>
+<p>At this point, the interpreter is in the middle of the function call to <code>bar</code>. There are three frames on the call stack: one for the module level, one for the function <code>foo</code>, and one for <code>bar</code> (<a href="#figure-11.2">Figure 11.2</a>.) Once <code>bar</code> returns, the frame associated with it is popped off the call stack and discarded.</p>
+<p>The bytecode instruction <code>RETURN_VALUE</code> tells the interpreter to pass a value between frames. First it will pop the top value off the data stack of the top frame on the call stack. Then it pops the entire frame off the call stack and throws it away. Finally, the value is pushed onto the data stack on the next frame down.</p>
+<p>When Ned Batchelder and I were working on Byterun, for a long time we had a significant error in our implementation. Instead of having one data stack on each frame, we had just one data stack on the entire virtual machine. We had dozens of tests made up of little snippets of Python code which we ran through Byterun and through the real Python interpreter to make sure the same thing happened in both interpreters. Nearly all of these tests were passing. The only thing we couldn’t get working was generators. Finally, reading the CPython code more carefully, we realized the mistake<a href="#fn2" class="footnote-ref" id="fnref2" role="doc-noteref"><sup>2</sup></a>. Moving a data stack onto each frame fixed the problem.</p>
+<p>Looking back on this bug, I was amazed at how little of Python relied on each frame having a different data stack. Nearly all operations in the Python interpreter carefully clean up the data stack, so the fact that the frames were sharing the same stack didn’t matter. In the example above, when <code>bar</code> finishes executing, it’ll leave its data stack empty. Even if <code>foo</code> shared the same stack, the values would be lower down. However, with generators, a key feature is the ability to pause a frame, return to some other frame, and then return to the generator frame later and have it be in exactly the same state that you left it. </p>
+<h2 id="byterun">Byterun</h2>
+<p>We now have enough context about the Python interpreter to begin examining Byterun.</p>
+<p>There are four kinds of objects in Byterun:</p>
+<ul>
+<li>A <code>VirtualMachine</code> class, which manages the highest-level structure, particularly the call stack of frames, and contains a mapping of instructions to operations. This is a more complex version of the <code>Intepreter</code> object above.</li>
+<li>A <code>Frame</code> class. Every <code>Frame</code> instance has one code object and manages a few other necessary bits of state, particularly the global and local namespaces, a reference to the calling frame, and the last bytecode instruction executed.</li>
+<li>A <code>Function</code> class, which will be used in place of real Python functions. Recall that calling a function creates a new frame in the interpreter. We implement Function so that we control the creation of new Frames.</li>
+<li>A <code>Block</code> class, which just wraps the three attributes of blocks. (The details of blocks aren’t central to the Python interpreter, so we won’t spend much time on them, but they’re included here so that Byterun can run real Python code.)</li>
+</ul>
+<h3 id="the-virtualmachine-class">The <code>VirtualMachine</code> Class</h3>
+<p>Only one instance of <code>VirtualMachine</code> will be created each time the program is run, because we only have one Python interpreter. <code>VirtualMachine</code> stores the call stack, the exception state, and return values while they’re being passed between frames. The entry point for executing code is the method <code>run_code</code>, which takes a compiled code object as an argument. It starts by setting up and running a frame. This frame may create other frames; the call stack will grow and shrink as the program executes. When the first frame eventually returns, execution is finished.</p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> VirtualMachineError(<span class="pp">Exception</span>):</span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">pass</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> VirtualMachine(<span class="bu">object</span>):</span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>):</span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.frames <span class="op">=</span> []   <span class="co"># The call stack of frames.</span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.frame <span class="op">=</span> <span class="va">None</span>  <span class="co"># The current frame.</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.return_value <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.last_exception <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-11"><a href="#cb17-11" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> run_code(<span class="va">self</span>, code, global_names<span class="op">=</span><span class="va">None</span>, local_names<span class="op">=</span><span class="va">None</span>):</span>
+<span id="cb17-12"><a href="#cb17-12" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; An entry point to execute code using the virtual machine.&quot;&quot;&quot;</span></span>
+<span id="cb17-13"><a href="#cb17-13" aria-hidden="true" tabindex="-1"></a>        frame <span class="op">=</span> <span class="va">self</span>.make_frame(code, global_names<span class="op">=</span>global_names, </span>
+<span id="cb17-14"><a href="#cb17-14" aria-hidden="true" tabindex="-1"></a>                                local_names<span class="op">=</span>local_names)</span>
+<span id="cb17-15"><a href="#cb17-15" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.run_frame(frame)</span></code></pre></div>
+<h3 id="the-frame-class">The <code>Frame</code> Class</h3>
+<p>Next we’ll write the <code>Frame</code> object. The frame is a collection of attributes with no methods. As mentioned above, the attributes include the code object created by the compiler; the local, global, and builtin namespaces; a reference to the previous frame; a data stack; a block stack; and the last instruction executed. (We have to do a little extra work to get to the builtin namespace because Python treats this namespace differently in different modules; this detail is not important to the virtual machine.)</p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Frame(<span class="bu">object</span>):</span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, code_obj, global_names, local_names, prev_frame):</span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.code_obj <span class="op">=</span> code_obj</span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.global_names <span class="op">=</span> global_names</span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.local_names <span class="op">=</span> local_names</span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.prev_frame <span class="op">=</span> prev_frame</span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.stack <span class="op">=</span> []</span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> prev_frame:</span>
+<span id="cb18-9"><a href="#cb18-9" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.builtin_names <span class="op">=</span> prev_frame.builtin_names</span>
+<span id="cb18-10"><a href="#cb18-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb18-11"><a href="#cb18-11" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.builtin_names <span class="op">=</span> local_names[<span class="st">&#39;__builtins__&#39;</span>]</span>
+<span id="cb18-12"><a href="#cb18-12" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="bu">hasattr</span>(<span class="va">self</span>.builtin_names, <span class="st">&#39;__dict__&#39;</span>):</span>
+<span id="cb18-13"><a href="#cb18-13" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.builtin_names <span class="op">=</span> <span class="va">self</span>.builtin_names.__dict__</span>
+<span id="cb18-14"><a href="#cb18-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-15"><a href="#cb18-15" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.last_instruction <span class="op">=</span> <span class="dv">0</span></span>
+<span id="cb18-16"><a href="#cb18-16" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.block_stack <span class="op">=</span> []</span></code></pre></div>
+<p>Next, we’ll add frame manipulation to the virtual machine. There are three helper functions for frames: one to create new frames (which is responsible for sorting out the namespaces for the new frame) and one each to push and pop frames on and off the frame stack. A fourth function, <code>run_frame</code>, does the main work of executing a frame. We’ll come back to this soon.</p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> VirtualMachine(<span class="bu">object</span>):</span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>    [... snip ...]</span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Frame manipulation</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> make_frame(<span class="va">self</span>, code, callargs<span class="op">=</span>{}, global_names<span class="op">=</span><span class="va">None</span>, local_names<span class="op">=</span><span class="va">None</span>):</span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> global_names <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span> <span class="kw">and</span> local_names <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a>            local_names <span class="op">=</span> global_names</span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> <span class="va">self</span>.frames:</span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a>            global_names <span class="op">=</span> <span class="va">self</span>.frame.global_names</span>
+<span id="cb19-10"><a href="#cb19-10" aria-hidden="true" tabindex="-1"></a>            local_names <span class="op">=</span> {}</span>
+<span id="cb19-11"><a href="#cb19-11" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb19-12"><a href="#cb19-12" aria-hidden="true" tabindex="-1"></a>            global_names <span class="op">=</span> local_names <span class="op">=</span> {</span>
+<span id="cb19-13"><a href="#cb19-13" aria-hidden="true" tabindex="-1"></a>                <span class="st">&#39;__builtins__&#39;</span>: __builtins__,</span>
+<span id="cb19-14"><a href="#cb19-14" aria-hidden="true" tabindex="-1"></a>                <span class="st">&#39;__name__&#39;</span>: <span class="st">&#39;__main__&#39;</span>,</span>
+<span id="cb19-15"><a href="#cb19-15" aria-hidden="true" tabindex="-1"></a>                <span class="st">&#39;__doc__&#39;</span>: <span class="va">None</span>,</span>
+<span id="cb19-16"><a href="#cb19-16" aria-hidden="true" tabindex="-1"></a>                <span class="st">&#39;__package__&#39;</span>: <span class="va">None</span>,</span>
+<span id="cb19-17"><a href="#cb19-17" aria-hidden="true" tabindex="-1"></a>            }</span>
+<span id="cb19-18"><a href="#cb19-18" aria-hidden="true" tabindex="-1"></a>        local_names.update(callargs)</span>
+<span id="cb19-19"><a href="#cb19-19" aria-hidden="true" tabindex="-1"></a>        frame <span class="op">=</span> Frame(code, global_names, local_names, <span class="va">self</span>.frame)</span>
+<span id="cb19-20"><a href="#cb19-20" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> frame</span>
+<span id="cb19-21"><a href="#cb19-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-22"><a href="#cb19-22" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> push_frame(<span class="va">self</span>, frame):</span>
+<span id="cb19-23"><a href="#cb19-23" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.frames.append(frame)</span>
+<span id="cb19-24"><a href="#cb19-24" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.frame <span class="op">=</span> frame</span>
+<span id="cb19-25"><a href="#cb19-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-26"><a href="#cb19-26" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> pop_frame(<span class="va">self</span>):</span>
+<span id="cb19-27"><a href="#cb19-27" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.frames.pop()</span>
+<span id="cb19-28"><a href="#cb19-28" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="va">self</span>.frames:</span>
+<span id="cb19-29"><a href="#cb19-29" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.frame <span class="op">=</span> <span class="va">self</span>.frames[<span class="op">-</span><span class="dv">1</span>]</span>
+<span id="cb19-30"><a href="#cb19-30" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb19-31"><a href="#cb19-31" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.frame <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb19-32"><a href="#cb19-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb19-33"><a href="#cb19-33" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> run_frame(<span class="va">self</span>):</span>
+<span id="cb19-34"><a href="#cb19-34" aria-hidden="true" tabindex="-1"></a>        <span class="cf">pass</span></span>
+<span id="cb19-35"><a href="#cb19-35" aria-hidden="true" tabindex="-1"></a>        <span class="co"># we&#39;ll come back to this shortly</span></span></code></pre></div>
+<h3 id="the-function-class">The <code>Function</code> Class</h3>
+<p>The implementation of the <code>Function</code> object is somewhat twisty, and most of the details aren’t critical to understanding the interpreter. The important thing to notice is that calling a function—invoking the <code>__call__</code> method—creates a new <code>Frame</code> object and starts running it.</p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> Function(<span class="bu">object</span>):</span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a><span class="co">    Create a realistic function object, defining the things the interpreter expects.</span></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a><span class="co">    &quot;&quot;&quot;</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a>    __slots__ <span class="op">=</span> [</span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;func_code&#39;</span>, <span class="st">&#39;func_name&#39;</span>, <span class="st">&#39;func_defaults&#39;</span>, <span class="st">&#39;func_globals&#39;</span>,</span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;func_locals&#39;</span>, <span class="st">&#39;func_dict&#39;</span>, <span class="st">&#39;func_closure&#39;</span>,</span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;__name__&#39;</span>, <span class="st">&#39;__dict__&#39;</span>, <span class="st">&#39;__doc__&#39;</span>,</span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;_vm&#39;</span>, <span class="st">&#39;_func&#39;</span>,</span>
+<span id="cb20-10"><a href="#cb20-10" aria-hidden="true" tabindex="-1"></a>    ]</span>
+<span id="cb20-11"><a href="#cb20-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-12"><a href="#cb20-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__init__</span>(<span class="va">self</span>, name, code, globs, defaults, closure, vm):</span>
+<span id="cb20-13"><a href="#cb20-13" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot;You don&#39;t need to follow this closely to understand the interpreter.&quot;&quot;&quot;</span></span>
+<span id="cb20-14"><a href="#cb20-14" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>._vm <span class="op">=</span> vm</span>
+<span id="cb20-15"><a href="#cb20-15" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.func_code <span class="op">=</span> code</span>
+<span id="cb20-16"><a href="#cb20-16" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.func_name <span class="op">=</span> <span class="va">self</span>.<span class="va">__name__</span> <span class="op">=</span> name <span class="kw">or</span> code.co_name</span>
+<span id="cb20-17"><a href="#cb20-17" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.func_defaults <span class="op">=</span> <span class="bu">tuple</span>(defaults)</span>
+<span id="cb20-18"><a href="#cb20-18" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.func_globals <span class="op">=</span> globs</span>
+<span id="cb20-19"><a href="#cb20-19" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.func_locals <span class="op">=</span> <span class="va">self</span>._vm.frame.f_locals</span>
+<span id="cb20-20"><a href="#cb20-20" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.__dict__ <span class="op">=</span> {}</span>
+<span id="cb20-21"><a href="#cb20-21" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.func_closure <span class="op">=</span> closure</span>
+<span id="cb20-22"><a href="#cb20-22" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.__doc__ <span class="op">=</span> code.co_consts[<span class="dv">0</span>] <span class="cf">if</span> code.co_consts <span class="cf">else</span> <span class="va">None</span></span>
+<span id="cb20-23"><a href="#cb20-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-24"><a href="#cb20-24" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Sometimes, we need a real Python function.  This is for that.</span></span>
+<span id="cb20-25"><a href="#cb20-25" aria-hidden="true" tabindex="-1"></a>        kw <span class="op">=</span> {</span>
+<span id="cb20-26"><a href="#cb20-26" aria-hidden="true" tabindex="-1"></a>            <span class="st">&#39;argdefs&#39;</span>: <span class="va">self</span>.func_defaults,</span>
+<span id="cb20-27"><a href="#cb20-27" aria-hidden="true" tabindex="-1"></a>        }</span>
+<span id="cb20-28"><a href="#cb20-28" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> closure:</span>
+<span id="cb20-29"><a href="#cb20-29" aria-hidden="true" tabindex="-1"></a>            kw[<span class="st">&#39;closure&#39;</span>] <span class="op">=</span> <span class="bu">tuple</span>(make_cell(<span class="dv">0</span>) <span class="cf">for</span> _ <span class="kw">in</span> closure)</span>
+<span id="cb20-30"><a href="#cb20-30" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>._func <span class="op">=</span> types.FunctionType(code, globs, <span class="op">**</span>kw)</span>
+<span id="cb20-31"><a href="#cb20-31" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-32"><a href="#cb20-32" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> <span class="fu">__call__</span>(<span class="va">self</span>, <span class="op">*</span>args, <span class="op">**</span>kwargs):</span>
+<span id="cb20-33"><a href="#cb20-33" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot;When calling a Function, make a new frame and run it.&quot;&quot;&quot;</span></span>
+<span id="cb20-34"><a href="#cb20-34" aria-hidden="true" tabindex="-1"></a>        callargs <span class="op">=</span> inspect.getcallargs(<span class="va">self</span>._func, <span class="op">*</span>args, <span class="op">**</span>kwargs)</span>
+<span id="cb20-35"><a href="#cb20-35" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Use callargs to provide a mapping of arguments: values to pass into the new </span></span>
+<span id="cb20-36"><a href="#cb20-36" aria-hidden="true" tabindex="-1"></a>        <span class="co"># frame.</span></span>
+<span id="cb20-37"><a href="#cb20-37" aria-hidden="true" tabindex="-1"></a>        frame <span class="op">=</span> <span class="va">self</span>._vm.make_frame(</span>
+<span id="cb20-38"><a href="#cb20-38" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.func_code, callargs, <span class="va">self</span>.func_globals, {}</span>
+<span id="cb20-39"><a href="#cb20-39" aria-hidden="true" tabindex="-1"></a>        )</span>
+<span id="cb20-40"><a href="#cb20-40" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="va">self</span>._vm.run_frame(frame)</span>
+<span id="cb20-41"><a href="#cb20-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-42"><a href="#cb20-42" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> make_cell(value):</span>
+<span id="cb20-43"><a href="#cb20-43" aria-hidden="true" tabindex="-1"></a>    <span class="co">&quot;&quot;&quot;Create a real Python closure and grab a cell.&quot;&quot;&quot;</span></span>
+<span id="cb20-44"><a href="#cb20-44" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Thanks to Alex Gaynor for help with this bit of twistiness.</span></span>
+<span id="cb20-45"><a href="#cb20-45" aria-hidden="true" tabindex="-1"></a>    fn <span class="op">=</span> (<span class="kw">lambda</span> x: <span class="kw">lambda</span>: x)(value)</span>
+<span id="cb20-46"><a href="#cb20-46" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> fn.__closure__[<span class="dv">0</span>]</span></code></pre></div>
+<p>Next, back on the <code>VirtualMachine</code> object, we’ll add some helper methods for data stack manipulation. The bytecodes that manipulate the stack always operate on the current frame’s data stack. This will make our implementations of <code>POP_TOP</code>, <code>LOAD_FAST</code>, and all the other instructions that touch the stack more readable.</p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> VirtualMachine(<span class="bu">object</span>):</span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>    [... snip ...]</span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Data stack manipulation</span></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> top(<span class="va">self</span>):</span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="va">self</span>.frame.stack[<span class="op">-</span><span class="dv">1</span>]</span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> pop(<span class="va">self</span>):</span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="va">self</span>.frame.stack.pop()</span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> push(<span class="va">self</span>, <span class="op">*</span>vals):</span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.frame.stack.extend(vals)</span>
+<span id="cb21-13"><a href="#cb21-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-14"><a href="#cb21-14" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> popn(<span class="va">self</span>, n):</span>
+<span id="cb21-15"><a href="#cb21-15" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot;Pop a number of values from the value stack.</span></span>
+<span id="cb21-16"><a href="#cb21-16" aria-hidden="true" tabindex="-1"></a><span class="co">        A list of `n` values is returned, the deepest value first.</span></span>
+<span id="cb21-17"><a href="#cb21-17" aria-hidden="true" tabindex="-1"></a><span class="co">        &quot;&quot;&quot;</span></span>
+<span id="cb21-18"><a href="#cb21-18" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> n:</span>
+<span id="cb21-19"><a href="#cb21-19" aria-hidden="true" tabindex="-1"></a>            ret <span class="op">=</span> <span class="va">self</span>.frame.stack[<span class="op">-</span>n:]</span>
+<span id="cb21-20"><a href="#cb21-20" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.frame.stack[<span class="op">-</span>n:] <span class="op">=</span> []</span>
+<span id="cb21-21"><a href="#cb21-21" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> ret</span>
+<span id="cb21-22"><a href="#cb21-22" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb21-23"><a href="#cb21-23" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> []</span></code></pre></div>
+<p>Before we get to running a frame, we need two more methods.</p>
+<p>The first, <code>parse_byte_and_args</code>, takes a bytecode, checks if it has arguments, and parses the arguments if so. This method also updates the frame’s attribute <code>last_instruction</code>, a reference to the last instruction executed. A single instruction is one byte long if it doesn’t have an argument, and three bytes if it does have an argument; the last two bytes are the argument. The meaning of the argument to each instruction depends on which instruction it is. For example, as mentioned above, for <code>POP_JUMP_IF_FALSE</code>, the argument to the instruction is the jump target. For <code>BUILD_LIST</code>, it is the number of elements in the list. For <code>LOAD_CONST</code>, it’s an index into the list of constants.</p>
+<p>Some instructions use simple numbers as their arguments. For others, the virtual machine has to do a little work to discover what the arguments mean. The <code>dis</code> module in the standard library exposes a cheatsheet explaining what arguments have what meaning, which makes our code more compact. For example, the list <code>dis.hasname</code> tells us that the arguments to <code>LOAD_NAME</code>, <code>IMPORT_NAME</code>, <code>LOAD_GLOBAL</code>, and nine other instructions have the same meaning: for these instructions, the argument represents an index into the list of names on the code object.</p>
+<div class="sourceCode" id="cb22"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> VirtualMachine(<span class="bu">object</span>):</span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>    [... snip ...]</span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> parse_byte_and_args(<span class="va">self</span>):</span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a>        f <span class="op">=</span> <span class="va">self</span>.frame</span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a>        opoffset <span class="op">=</span> f.last_instruction</span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a>        byteCode <span class="op">=</span> f.code_obj.co_code[opoffset]</span>
+<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a>        f.last_instruction <span class="op">+=</span> <span class="dv">1</span></span>
+<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a>        byte_name <span class="op">=</span> dis.opname[byteCode]</span>
+<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> byteCode <span class="op">&gt;=</span> dis.HAVE_ARGUMENT:</span>
+<span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a>            <span class="co"># index into the bytecode</span></span>
+<span id="cb22-12"><a href="#cb22-12" aria-hidden="true" tabindex="-1"></a>            arg <span class="op">=</span> f.code_obj.co_code[f.last_instruction:f.last_instruction<span class="op">+</span><span class="dv">2</span>]  </span>
+<span id="cb22-13"><a href="#cb22-13" aria-hidden="true" tabindex="-1"></a>            f.last_instruction <span class="op">+=</span> <span class="dv">2</span>   <span class="co"># advance the instruction pointer</span></span>
+<span id="cb22-14"><a href="#cb22-14" aria-hidden="true" tabindex="-1"></a>            arg_val <span class="op">=</span> arg[<span class="dv">0</span>] <span class="op">+</span> (arg[<span class="dv">1</span>] <span class="op">*</span> <span class="dv">256</span>)</span>
+<span id="cb22-15"><a href="#cb22-15" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> byteCode <span class="kw">in</span> dis.hasconst:   <span class="co"># Look up a constant</span></span>
+<span id="cb22-16"><a href="#cb22-16" aria-hidden="true" tabindex="-1"></a>                arg <span class="op">=</span> f.code_obj.co_consts[arg_val]</span>
+<span id="cb22-17"><a href="#cb22-17" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> byteCode <span class="kw">in</span> dis.hasname:  <span class="co"># Look up a name</span></span>
+<span id="cb22-18"><a href="#cb22-18" aria-hidden="true" tabindex="-1"></a>                arg <span class="op">=</span> f.code_obj.co_names[arg_val]</span>
+<span id="cb22-19"><a href="#cb22-19" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> byteCode <span class="kw">in</span> dis.haslocal: <span class="co"># Look up a local name</span></span>
+<span id="cb22-20"><a href="#cb22-20" aria-hidden="true" tabindex="-1"></a>                arg <span class="op">=</span> f.code_obj.co_varnames[arg_val]</span>
+<span id="cb22-21"><a href="#cb22-21" aria-hidden="true" tabindex="-1"></a>            <span class="cf">elif</span> byteCode <span class="kw">in</span> dis.hasjrel:  <span class="co"># Calculate a relative jump</span></span>
+<span id="cb22-22"><a href="#cb22-22" aria-hidden="true" tabindex="-1"></a>                arg <span class="op">=</span> f.last_instruction <span class="op">+</span> arg_val</span>
+<span id="cb22-23"><a href="#cb22-23" aria-hidden="true" tabindex="-1"></a>            <span class="cf">else</span>:</span>
+<span id="cb22-24"><a href="#cb22-24" aria-hidden="true" tabindex="-1"></a>                arg <span class="op">=</span> arg_val</span>
+<span id="cb22-25"><a href="#cb22-25" aria-hidden="true" tabindex="-1"></a>            argument <span class="op">=</span> [arg]</span>
+<span id="cb22-26"><a href="#cb22-26" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb22-27"><a href="#cb22-27" aria-hidden="true" tabindex="-1"></a>            argument <span class="op">=</span> []</span>
+<span id="cb22-28"><a href="#cb22-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-29"><a href="#cb22-29" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> byte_name, argument</span></code></pre></div>
+<p>The next method is <code>dispatch</code>, which looks up the operations for a given instruction and executes them. In the CPython interpreter, this dispatch is done with a giant switch statement that spans 1,500 lines! Luckily, since we’re writing Python, we can be more compact. We’ll define a method for each byte name and then use <code>getattr</code> to look it up. Like in the toy interpreter above, if our instruction is named <code>FOO_BAR</code>, the corresponding method would be named <code>byte_FOO_BAR</code>. For the moment, we’ll leave the content of these methods as a black box. Each bytecode method will return either <code>None</code> or a string, called <code>why</code>, which is an extra piece of state the interpreter needs in some cases. These return values of the individual instruction methods are used only as internal indicators of interpreter state—don’t confuse these with return values from executing frames.</p>
+<div class="sourceCode" id="cb23"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> VirtualMachine(<span class="bu">object</span>):</span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>    [... snip ...]</span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> dispatch(<span class="va">self</span>, byte_name, argument):</span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; Dispatch by bytename to the corresponding methods.</span></span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a><span class="co">        Exceptions are caught and set on the virtual machine.&quot;&quot;&quot;</span></span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a>        <span class="co"># When later unwinding the block stack,</span></span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a>        <span class="co"># we need to keep track of why we are doing it.</span></span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a>        why <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb23-11"><a href="#cb23-11" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
+<span id="cb23-12"><a href="#cb23-12" aria-hidden="true" tabindex="-1"></a>            bytecode_fn <span class="op">=</span> <span class="bu">getattr</span>(<span class="va">self</span>, <span class="st">&#39;byte_</span><span class="sc">%s</span><span class="st">&#39;</span> <span class="op">%</span> byte_name, <span class="va">None</span>)</span>
+<span id="cb23-13"><a href="#cb23-13" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> bytecode_fn <span class="kw">is</span> <span class="va">None</span>:</span>
+<span id="cb23-14"><a href="#cb23-14" aria-hidden="true" tabindex="-1"></a>                <span class="cf">if</span> byte_name.startswith(<span class="st">&#39;UNARY_&#39;</span>):</span>
+<span id="cb23-15"><a href="#cb23-15" aria-hidden="true" tabindex="-1"></a>                    <span class="va">self</span>.unaryOperator(byte_name[<span class="dv">6</span>:])</span>
+<span id="cb23-16"><a href="#cb23-16" aria-hidden="true" tabindex="-1"></a>                <span class="cf">elif</span> byte_name.startswith(<span class="st">&#39;BINARY_&#39;</span>):</span>
+<span id="cb23-17"><a href="#cb23-17" aria-hidden="true" tabindex="-1"></a>                    <span class="va">self</span>.binaryOperator(byte_name[<span class="dv">7</span>:])</span>
+<span id="cb23-18"><a href="#cb23-18" aria-hidden="true" tabindex="-1"></a>                <span class="cf">else</span>:</span>
+<span id="cb23-19"><a href="#cb23-19" aria-hidden="true" tabindex="-1"></a>                    <span class="cf">raise</span> VirtualMachineError(</span>
+<span id="cb23-20"><a href="#cb23-20" aria-hidden="true" tabindex="-1"></a>                        <span class="st">&quot;unsupported bytecode type: </span><span class="sc">%s</span><span class="st">&quot;</span> <span class="op">%</span> byte_name</span>
+<span id="cb23-21"><a href="#cb23-21" aria-hidden="true" tabindex="-1"></a>                    )</span>
+<span id="cb23-22"><a href="#cb23-22" aria-hidden="true" tabindex="-1"></a>            <span class="cf">else</span>:</span>
+<span id="cb23-23"><a href="#cb23-23" aria-hidden="true" tabindex="-1"></a>                why <span class="op">=</span> bytecode_fn(<span class="op">*</span>argument)</span>
+<span id="cb23-24"><a href="#cb23-24" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span>:</span>
+<span id="cb23-25"><a href="#cb23-25" aria-hidden="true" tabindex="-1"></a>            <span class="co"># deal with exceptions encountered while executing the op.</span></span>
+<span id="cb23-26"><a href="#cb23-26" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.last_exception <span class="op">=</span> sys.exc_info()[:<span class="dv">2</span>] <span class="op">+</span> (<span class="va">None</span>,)</span>
+<span id="cb23-27"><a href="#cb23-27" aria-hidden="true" tabindex="-1"></a>            why <span class="op">=</span> <span class="st">&#39;exception&#39;</span></span>
+<span id="cb23-28"><a href="#cb23-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-29"><a href="#cb23-29" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> why</span>
+<span id="cb23-30"><a href="#cb23-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-31"><a href="#cb23-31" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> run_frame(<span class="va">self</span>, frame):</span>
+<span id="cb23-32"><a href="#cb23-32" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot;Run a frame until it returns (somehow).</span></span>
+<span id="cb23-33"><a href="#cb23-33" aria-hidden="true" tabindex="-1"></a><span class="co">        Exceptions are raised, the return value is returned.</span></span>
+<span id="cb23-34"><a href="#cb23-34" aria-hidden="true" tabindex="-1"></a><span class="co">        &quot;&quot;&quot;</span></span>
+<span id="cb23-35"><a href="#cb23-35" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push_frame(frame)</span>
+<span id="cb23-36"><a href="#cb23-36" aria-hidden="true" tabindex="-1"></a>        <span class="cf">while</span> <span class="va">True</span>:</span>
+<span id="cb23-37"><a href="#cb23-37" aria-hidden="true" tabindex="-1"></a>            byte_name, arguments <span class="op">=</span> <span class="va">self</span>.parse_byte_and_args()</span>
+<span id="cb23-38"><a href="#cb23-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-39"><a href="#cb23-39" aria-hidden="true" tabindex="-1"></a>            why <span class="op">=</span> <span class="va">self</span>.dispatch(byte_name, arguments)</span>
+<span id="cb23-40"><a href="#cb23-40" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-41"><a href="#cb23-41" aria-hidden="true" tabindex="-1"></a>            <span class="co"># Deal with any block management we need to do</span></span>
+<span id="cb23-42"><a href="#cb23-42" aria-hidden="true" tabindex="-1"></a>            <span class="cf">while</span> why <span class="kw">and</span> frame.block_stack:</span>
+<span id="cb23-43"><a href="#cb23-43" aria-hidden="true" tabindex="-1"></a>                why <span class="op">=</span> <span class="va">self</span>.manage_block_stack(why)</span>
+<span id="cb23-44"><a href="#cb23-44" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-45"><a href="#cb23-45" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> why:</span>
+<span id="cb23-46"><a href="#cb23-46" aria-hidden="true" tabindex="-1"></a>                <span class="cf">break</span></span>
+<span id="cb23-47"><a href="#cb23-47" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-48"><a href="#cb23-48" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.pop_frame()</span>
+<span id="cb23-49"><a href="#cb23-49" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-50"><a href="#cb23-50" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> why <span class="op">==</span> <span class="st">&#39;exception&#39;</span>:</span>
+<span id="cb23-51"><a href="#cb23-51" aria-hidden="true" tabindex="-1"></a>            exc, val, tb <span class="op">=</span> <span class="va">self</span>.last_exception</span>
+<span id="cb23-52"><a href="#cb23-52" aria-hidden="true" tabindex="-1"></a>            e <span class="op">=</span> exc(val)</span>
+<span id="cb23-53"><a href="#cb23-53" aria-hidden="true" tabindex="-1"></a>            e.__traceback__ <span class="op">=</span> tb</span>
+<span id="cb23-54"><a href="#cb23-54" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span> e</span>
+<span id="cb23-55"><a href="#cb23-55" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-56"><a href="#cb23-56" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="va">self</span>.return_value</span></code></pre></div>
+<h3 id="the-block-class">The <code>Block</code> Class</h3>
+<p>Before we implement the methods for each bytecode instruction, we’ll briefly discuss blocks. A block is used for certain kinds of flow control, specifically exception handling and looping. The block is reponsible for making sure that the data stack is in the appropriate state when the operation is finished. For example, in a loop, a special iterator object remains on the stack while the loop is running, but is popped off when it is finished. The interpreter must keep track of whether the loop is continuing or is finished.</p>
+<p>To keep track of this extra piece of information, the interpreter sets a flag to indicate its state. We implement this flag as a variable called <code>why</code>, which can be <code>None</code> or one of the strings <code>"continue"</code>, <code>"break"</code>, <code>"exception"</code>, or <code>"return"</code>. This indicates what kind of manipulation of the block stack and data stack should happen. To return to the iterator example, if the top of the block stack is a <code>loop</code> block and the <code>why</code> code is <code>continue</code>, the iterator object should remain on the data stack, but if the <code>why</code> code is <code>break</code>, it should be popped off.</p>
+<p>The precise details of block manipulation are rather fiddly, and we won’t spend more time on this, but interested readers are encouraged to take a careful look.</p>
+<div class="sourceCode" id="cb24"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a>Block <span class="op">=</span> collections.namedtuple(<span class="st">&quot;Block&quot;</span>, <span class="st">&quot;type, handler, stack_height&quot;</span>)</span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> VirtualMachine(<span class="bu">object</span>):</span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a>    [... snip ...]</span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Block stack manipulation</span></span>
+<span id="cb24-7"><a href="#cb24-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> push_block(<span class="va">self</span>, b_type, handler<span class="op">=</span><span class="va">None</span>):</span>
+<span id="cb24-8"><a href="#cb24-8" aria-hidden="true" tabindex="-1"></a>        stack_height <span class="op">=</span> <span class="bu">len</span>(<span class="va">self</span>.frame.stack)</span>
+<span id="cb24-9"><a href="#cb24-9" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.frame.block_stack.append(Block(b_type, handler, stack_height))</span>
+<span id="cb24-10"><a href="#cb24-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-11"><a href="#cb24-11" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> pop_block(<span class="va">self</span>):</span>
+<span id="cb24-12"><a href="#cb24-12" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="va">self</span>.frame.block_stack.pop()</span>
+<span id="cb24-13"><a href="#cb24-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-14"><a href="#cb24-14" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> unwind_block(<span class="va">self</span>, block):</span>
+<span id="cb24-15"><a href="#cb24-15" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot;Unwind the values on the data stack corresponding to a given block.&quot;&quot;&quot;</span></span>
+<span id="cb24-16"><a href="#cb24-16" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> block.<span class="bu">type</span> <span class="op">==</span> <span class="st">&#39;except-handler&#39;</span>:</span>
+<span id="cb24-17"><a href="#cb24-17" aria-hidden="true" tabindex="-1"></a>            <span class="co"># The exception itself is on the stack as type, value, and traceback.</span></span>
+<span id="cb24-18"><a href="#cb24-18" aria-hidden="true" tabindex="-1"></a>            offset <span class="op">=</span> <span class="dv">3</span>  </span>
+<span id="cb24-19"><a href="#cb24-19" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb24-20"><a href="#cb24-20" aria-hidden="true" tabindex="-1"></a>            offset <span class="op">=</span> <span class="dv">0</span></span>
+<span id="cb24-21"><a href="#cb24-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-22"><a href="#cb24-22" aria-hidden="true" tabindex="-1"></a>        <span class="cf">while</span> <span class="bu">len</span>(<span class="va">self</span>.frame.stack) <span class="op">&gt;</span> block.level <span class="op">+</span> offset:</span>
+<span id="cb24-23"><a href="#cb24-23" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.pop()</span>
+<span id="cb24-24"><a href="#cb24-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-25"><a href="#cb24-25" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> block.<span class="bu">type</span> <span class="op">==</span> <span class="st">&#39;except-handler&#39;</span>:</span>
+<span id="cb24-26"><a href="#cb24-26" aria-hidden="true" tabindex="-1"></a>            traceback, value, exctype <span class="op">=</span> <span class="va">self</span>.popn(<span class="dv">3</span>)</span>
+<span id="cb24-27"><a href="#cb24-27" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.last_exception <span class="op">=</span> exctype, value, traceback</span>
+<span id="cb24-28"><a href="#cb24-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-29"><a href="#cb24-29" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> manage_block_stack(<span class="va">self</span>, why):</span>
+<span id="cb24-30"><a href="#cb24-30" aria-hidden="true" tabindex="-1"></a>        <span class="co">&quot;&quot;&quot; &quot;&quot;&quot;</span></span>
+<span id="cb24-31"><a href="#cb24-31" aria-hidden="true" tabindex="-1"></a>        frame <span class="op">=</span> <span class="va">self</span>.frame</span>
+<span id="cb24-32"><a href="#cb24-32" aria-hidden="true" tabindex="-1"></a>        block <span class="op">=</span> frame.block_stack[<span class="op">-</span><span class="dv">1</span>]</span>
+<span id="cb24-33"><a href="#cb24-33" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> block.<span class="bu">type</span> <span class="op">==</span> <span class="st">&#39;loop&#39;</span> <span class="kw">and</span> why <span class="op">==</span> <span class="st">&#39;continue&#39;</span>:</span>
+<span id="cb24-34"><a href="#cb24-34" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.jump(<span class="va">self</span>.return_value)</span>
+<span id="cb24-35"><a href="#cb24-35" aria-hidden="true" tabindex="-1"></a>            why <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb24-36"><a href="#cb24-36" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> why</span>
+<span id="cb24-37"><a href="#cb24-37" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-38"><a href="#cb24-38" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.pop_block()</span>
+<span id="cb24-39"><a href="#cb24-39" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.unwind_block(block)</span>
+<span id="cb24-40"><a href="#cb24-40" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-41"><a href="#cb24-41" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> block.<span class="bu">type</span> <span class="op">==</span> <span class="st">&#39;loop&#39;</span> <span class="kw">and</span> why <span class="op">==</span> <span class="st">&#39;break&#39;</span>:</span>
+<span id="cb24-42"><a href="#cb24-42" aria-hidden="true" tabindex="-1"></a>            why <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb24-43"><a href="#cb24-43" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.jump(block.handler)</span>
+<span id="cb24-44"><a href="#cb24-44" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> why</span>
+<span id="cb24-45"><a href="#cb24-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-46"><a href="#cb24-46" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> (block.<span class="bu">type</span> <span class="kw">in</span> [<span class="st">&#39;setup-except&#39;</span>, <span class="st">&#39;finally&#39;</span>] <span class="kw">and</span> why <span class="op">==</span> <span class="st">&#39;exception&#39;</span>):</span>
+<span id="cb24-47"><a href="#cb24-47" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.push_block(<span class="st">&#39;except-handler&#39;</span>)</span>
+<span id="cb24-48"><a href="#cb24-48" aria-hidden="true" tabindex="-1"></a>            exctype, value, tb <span class="op">=</span> <span class="va">self</span>.last_exception</span>
+<span id="cb24-49"><a href="#cb24-49" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.push(tb, value, exctype)</span>
+<span id="cb24-50"><a href="#cb24-50" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.push(tb, value, exctype) <span class="co"># yes, twice</span></span>
+<span id="cb24-51"><a href="#cb24-51" aria-hidden="true" tabindex="-1"></a>            why <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb24-52"><a href="#cb24-52" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.jump(block.handler)</span>
+<span id="cb24-53"><a href="#cb24-53" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> why</span>
+<span id="cb24-54"><a href="#cb24-54" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-55"><a href="#cb24-55" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> block.<span class="bu">type</span> <span class="op">==</span> <span class="st">&#39;finally&#39;</span>:</span>
+<span id="cb24-56"><a href="#cb24-56" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> why <span class="kw">in</span> (<span class="st">&#39;return&#39;</span>, <span class="st">&#39;continue&#39;</span>):</span>
+<span id="cb24-57"><a href="#cb24-57" aria-hidden="true" tabindex="-1"></a>                <span class="va">self</span>.push(<span class="va">self</span>.return_value)</span>
+<span id="cb24-58"><a href="#cb24-58" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-59"><a href="#cb24-59" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.push(why)</span>
+<span id="cb24-60"><a href="#cb24-60" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-61"><a href="#cb24-61" aria-hidden="true" tabindex="-1"></a>            why <span class="op">=</span> <span class="va">None</span></span>
+<span id="cb24-62"><a href="#cb24-62" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.jump(block.handler)</span>
+<span id="cb24-63"><a href="#cb24-63" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> why</span>
+<span id="cb24-64"><a href="#cb24-64" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> why</span></code></pre></div>
+<h2 id="the-instructions">The Instructions</h2>
+<p>All that’s left is to implement the dozens of methods for instructions. The actual instructions are the least interesting part of the interpreter, so we show only a handful here, but the full implementation is <a href="https://github.com/nedbat/byterun">available on GitHub</a>. (Enough instructions are included here to execute all the code samples that we disassembled above.)</p>
+<div class="sourceCode" id="cb25"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="kw">class</span> VirtualMachine(<span class="bu">object</span>):</span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a>    [... snip ...]</span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a>    <span class="co">## Stack manipulation</span></span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_LOAD_CONST(<span class="va">self</span>, const):</span>
+<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push(const)</span>
+<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_POP_TOP(<span class="va">self</span>):</span>
+<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.pop()</span>
+<span id="cb25-11"><a href="#cb25-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-12"><a href="#cb25-12" aria-hidden="true" tabindex="-1"></a>    <span class="co">## Names</span></span>
+<span id="cb25-13"><a href="#cb25-13" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_LOAD_NAME(<span class="va">self</span>, name):</span>
+<span id="cb25-14"><a href="#cb25-14" aria-hidden="true" tabindex="-1"></a>        frame <span class="op">=</span> <span class="va">self</span>.frame</span>
+<span id="cb25-15"><a href="#cb25-15" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> name <span class="kw">in</span> frame.f_locals:</span>
+<span id="cb25-16"><a href="#cb25-16" aria-hidden="true" tabindex="-1"></a>            val <span class="op">=</span> frame.f_locals[name]</span>
+<span id="cb25-17"><a href="#cb25-17" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> name <span class="kw">in</span> frame.f_globals:</span>
+<span id="cb25-18"><a href="#cb25-18" aria-hidden="true" tabindex="-1"></a>            val <span class="op">=</span> frame.f_globals[name]</span>
+<span id="cb25-19"><a href="#cb25-19" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> name <span class="kw">in</span> frame.f_builtins:</span>
+<span id="cb25-20"><a href="#cb25-20" aria-hidden="true" tabindex="-1"></a>            val <span class="op">=</span> frame.f_builtins[name]</span>
+<span id="cb25-21"><a href="#cb25-21" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb25-22"><a href="#cb25-22" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span> <span class="pp">NameError</span>(<span class="st">&quot;name &#39;</span><span class="sc">%s</span><span class="st">&#39; is not defined&quot;</span> <span class="op">%</span> name)</span>
+<span id="cb25-23"><a href="#cb25-23" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push(val)</span>
+<span id="cb25-24"><a href="#cb25-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-25"><a href="#cb25-25" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_STORE_NAME(<span class="va">self</span>, name):</span>
+<span id="cb25-26"><a href="#cb25-26" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.frame.f_locals[name] <span class="op">=</span> <span class="va">self</span>.pop()</span>
+<span id="cb25-27"><a href="#cb25-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-28"><a href="#cb25-28" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_LOAD_FAST(<span class="va">self</span>, name):</span>
+<span id="cb25-29"><a href="#cb25-29" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> name <span class="kw">in</span> <span class="va">self</span>.frame.f_locals:</span>
+<span id="cb25-30"><a href="#cb25-30" aria-hidden="true" tabindex="-1"></a>            val <span class="op">=</span> <span class="va">self</span>.frame.f_locals[name]</span>
+<span id="cb25-31"><a href="#cb25-31" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb25-32"><a href="#cb25-32" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span> <span class="pp">UnboundLocalError</span>(</span>
+<span id="cb25-33"><a href="#cb25-33" aria-hidden="true" tabindex="-1"></a>                <span class="st">&quot;local variable &#39;</span><span class="sc">%s</span><span class="st">&#39; referenced before assignment&quot;</span> <span class="op">%</span> name</span>
+<span id="cb25-34"><a href="#cb25-34" aria-hidden="true" tabindex="-1"></a>            )</span>
+<span id="cb25-35"><a href="#cb25-35" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push(val)</span>
+<span id="cb25-36"><a href="#cb25-36" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-37"><a href="#cb25-37" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_STORE_FAST(<span class="va">self</span>, name):</span>
+<span id="cb25-38"><a href="#cb25-38" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.frame.f_locals[name] <span class="op">=</span> <span class="va">self</span>.pop()</span>
+<span id="cb25-39"><a href="#cb25-39" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-40"><a href="#cb25-40" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_LOAD_GLOBAL(<span class="va">self</span>, name):</span>
+<span id="cb25-41"><a href="#cb25-41" aria-hidden="true" tabindex="-1"></a>        f <span class="op">=</span> <span class="va">self</span>.frame</span>
+<span id="cb25-42"><a href="#cb25-42" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> name <span class="kw">in</span> f.f_globals:</span>
+<span id="cb25-43"><a href="#cb25-43" aria-hidden="true" tabindex="-1"></a>            val <span class="op">=</span> f.f_globals[name]</span>
+<span id="cb25-44"><a href="#cb25-44" aria-hidden="true" tabindex="-1"></a>        <span class="cf">elif</span> name <span class="kw">in</span> f.f_builtins:</span>
+<span id="cb25-45"><a href="#cb25-45" aria-hidden="true" tabindex="-1"></a>            val <span class="op">=</span> f.f_builtins[name]</span>
+<span id="cb25-46"><a href="#cb25-46" aria-hidden="true" tabindex="-1"></a>        <span class="cf">else</span>:</span>
+<span id="cb25-47"><a href="#cb25-47" aria-hidden="true" tabindex="-1"></a>            <span class="cf">raise</span> <span class="pp">NameError</span>(<span class="st">&quot;global name &#39;</span><span class="sc">%s</span><span class="st">&#39; is not defined&quot;</span> <span class="op">%</span> name)</span>
+<span id="cb25-48"><a href="#cb25-48" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push(val)</span>
+<span id="cb25-49"><a href="#cb25-49" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-50"><a href="#cb25-50" aria-hidden="true" tabindex="-1"></a>    <span class="co">## Operators</span></span>
+<span id="cb25-51"><a href="#cb25-51" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-52"><a href="#cb25-52" aria-hidden="true" tabindex="-1"></a>    BINARY_OPERATORS <span class="op">=</span> {</span>
+<span id="cb25-53"><a href="#cb25-53" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;POWER&#39;</span>:    <span class="bu">pow</span>,</span>
+<span id="cb25-54"><a href="#cb25-54" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;MULTIPLY&#39;</span>: operator.mul,</span>
+<span id="cb25-55"><a href="#cb25-55" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;FLOOR_DIVIDE&#39;</span>: operator.floordiv,</span>
+<span id="cb25-56"><a href="#cb25-56" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;TRUE_DIVIDE&#39;</span>:  operator.truediv,</span>
+<span id="cb25-57"><a href="#cb25-57" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;MODULO&#39;</span>:   operator.mod,</span>
+<span id="cb25-58"><a href="#cb25-58" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;ADD&#39;</span>:      operator.add,</span>
+<span id="cb25-59"><a href="#cb25-59" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;SUBTRACT&#39;</span>: operator.sub,</span>
+<span id="cb25-60"><a href="#cb25-60" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;SUBSCR&#39;</span>:   operator.getitem,</span>
+<span id="cb25-61"><a href="#cb25-61" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;LSHIFT&#39;</span>:   operator.lshift,</span>
+<span id="cb25-62"><a href="#cb25-62" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;RSHIFT&#39;</span>:   operator.rshift,</span>
+<span id="cb25-63"><a href="#cb25-63" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;AND&#39;</span>:      operator.and_,</span>
+<span id="cb25-64"><a href="#cb25-64" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;XOR&#39;</span>:      operator.xor,</span>
+<span id="cb25-65"><a href="#cb25-65" aria-hidden="true" tabindex="-1"></a>        <span class="st">&#39;OR&#39;</span>:       operator.or_,</span>
+<span id="cb25-66"><a href="#cb25-66" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb25-67"><a href="#cb25-67" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-68"><a href="#cb25-68" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> binaryOperator(<span class="va">self</span>, op):</span>
+<span id="cb25-69"><a href="#cb25-69" aria-hidden="true" tabindex="-1"></a>        x, y <span class="op">=</span> <span class="va">self</span>.popn(<span class="dv">2</span>)</span>
+<span id="cb25-70"><a href="#cb25-70" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push(<span class="va">self</span>.BINARY_OPERATORS[op](x, y))</span>
+<span id="cb25-71"><a href="#cb25-71" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-72"><a href="#cb25-72" aria-hidden="true" tabindex="-1"></a>    COMPARE_OPERATORS <span class="op">=</span> [</span>
+<span id="cb25-73"><a href="#cb25-73" aria-hidden="true" tabindex="-1"></a>        operator.lt,</span>
+<span id="cb25-74"><a href="#cb25-74" aria-hidden="true" tabindex="-1"></a>        operator.le,</span>
+<span id="cb25-75"><a href="#cb25-75" aria-hidden="true" tabindex="-1"></a>        operator.eq,</span>
+<span id="cb25-76"><a href="#cb25-76" aria-hidden="true" tabindex="-1"></a>        operator.ne,</span>
+<span id="cb25-77"><a href="#cb25-77" aria-hidden="true" tabindex="-1"></a>        operator.gt,</span>
+<span id="cb25-78"><a href="#cb25-78" aria-hidden="true" tabindex="-1"></a>        operator.ge,</span>
+<span id="cb25-79"><a href="#cb25-79" aria-hidden="true" tabindex="-1"></a>        <span class="kw">lambda</span> x, y: x <span class="kw">in</span> y,</span>
+<span id="cb25-80"><a href="#cb25-80" aria-hidden="true" tabindex="-1"></a>        <span class="kw">lambda</span> x, y: x <span class="kw">not</span> <span class="kw">in</span> y,</span>
+<span id="cb25-81"><a href="#cb25-81" aria-hidden="true" tabindex="-1"></a>        <span class="kw">lambda</span> x, y: x <span class="kw">is</span> y,</span>
+<span id="cb25-82"><a href="#cb25-82" aria-hidden="true" tabindex="-1"></a>        <span class="kw">lambda</span> x, y: x <span class="kw">is</span> <span class="kw">not</span> y,</span>
+<span id="cb25-83"><a href="#cb25-83" aria-hidden="true" tabindex="-1"></a>        <span class="kw">lambda</span> x, y: <span class="bu">issubclass</span>(x, <span class="pp">Exception</span>) <span class="kw">and</span> <span class="bu">issubclass</span>(x, y),</span>
+<span id="cb25-84"><a href="#cb25-84" aria-hidden="true" tabindex="-1"></a>    ]</span>
+<span id="cb25-85"><a href="#cb25-85" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-86"><a href="#cb25-86" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_COMPARE_OP(<span class="va">self</span>, opnum):</span>
+<span id="cb25-87"><a href="#cb25-87" aria-hidden="true" tabindex="-1"></a>        x, y <span class="op">=</span> <span class="va">self</span>.popn(<span class="dv">2</span>)</span>
+<span id="cb25-88"><a href="#cb25-88" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push(<span class="va">self</span>.COMPARE_OPERATORS[opnum](x, y))</span>
+<span id="cb25-89"><a href="#cb25-89" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-90"><a href="#cb25-90" aria-hidden="true" tabindex="-1"></a>    <span class="co">## Attributes and indexing</span></span>
+<span id="cb25-91"><a href="#cb25-91" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-92"><a href="#cb25-92" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_LOAD_ATTR(<span class="va">self</span>, attr):</span>
+<span id="cb25-93"><a href="#cb25-93" aria-hidden="true" tabindex="-1"></a>        obj <span class="op">=</span> <span class="va">self</span>.pop()</span>
+<span id="cb25-94"><a href="#cb25-94" aria-hidden="true" tabindex="-1"></a>        val <span class="op">=</span> <span class="bu">getattr</span>(obj, attr)</span>
+<span id="cb25-95"><a href="#cb25-95" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push(val)</span>
+<span id="cb25-96"><a href="#cb25-96" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-97"><a href="#cb25-97" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_STORE_ATTR(<span class="va">self</span>, name):</span>
+<span id="cb25-98"><a href="#cb25-98" aria-hidden="true" tabindex="-1"></a>        val, obj <span class="op">=</span> <span class="va">self</span>.popn(<span class="dv">2</span>)</span>
+<span id="cb25-99"><a href="#cb25-99" aria-hidden="true" tabindex="-1"></a>        <span class="bu">setattr</span>(obj, name, val)</span>
+<span id="cb25-100"><a href="#cb25-100" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-101"><a href="#cb25-101" aria-hidden="true" tabindex="-1"></a>    <span class="co">## Building</span></span>
+<span id="cb25-102"><a href="#cb25-102" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-103"><a href="#cb25-103" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_BUILD_LIST(<span class="va">self</span>, count):</span>
+<span id="cb25-104"><a href="#cb25-104" aria-hidden="true" tabindex="-1"></a>        elts <span class="op">=</span> <span class="va">self</span>.popn(count)</span>
+<span id="cb25-105"><a href="#cb25-105" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push(elts)</span>
+<span id="cb25-106"><a href="#cb25-106" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-107"><a href="#cb25-107" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_BUILD_MAP(<span class="va">self</span>, size):</span>
+<span id="cb25-108"><a href="#cb25-108" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push({})</span>
+<span id="cb25-109"><a href="#cb25-109" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-110"><a href="#cb25-110" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_STORE_MAP(<span class="va">self</span>):</span>
+<span id="cb25-111"><a href="#cb25-111" aria-hidden="true" tabindex="-1"></a>        the_map, val, key <span class="op">=</span> <span class="va">self</span>.popn(<span class="dv">3</span>)</span>
+<span id="cb25-112"><a href="#cb25-112" aria-hidden="true" tabindex="-1"></a>        the_map[key] <span class="op">=</span> val</span>
+<span id="cb25-113"><a href="#cb25-113" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push(the_map)</span>
+<span id="cb25-114"><a href="#cb25-114" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-115"><a href="#cb25-115" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_LIST_APPEND(<span class="va">self</span>, count):</span>
+<span id="cb25-116"><a href="#cb25-116" aria-hidden="true" tabindex="-1"></a>        val <span class="op">=</span> <span class="va">self</span>.pop()</span>
+<span id="cb25-117"><a href="#cb25-117" aria-hidden="true" tabindex="-1"></a>        the_list <span class="op">=</span> <span class="va">self</span>.frame.stack[<span class="op">-</span>count] <span class="co"># peek</span></span>
+<span id="cb25-118"><a href="#cb25-118" aria-hidden="true" tabindex="-1"></a>        the_list.append(val)</span>
+<span id="cb25-119"><a href="#cb25-119" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-120"><a href="#cb25-120" aria-hidden="true" tabindex="-1"></a>    <span class="co">## Jumps</span></span>
+<span id="cb25-121"><a href="#cb25-121" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-122"><a href="#cb25-122" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_JUMP_FORWARD(<span class="va">self</span>, jump):</span>
+<span id="cb25-123"><a href="#cb25-123" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.jump(jump)</span>
+<span id="cb25-124"><a href="#cb25-124" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-125"><a href="#cb25-125" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_JUMP_ABSOLUTE(<span class="va">self</span>, jump):</span>
+<span id="cb25-126"><a href="#cb25-126" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.jump(jump)</span>
+<span id="cb25-127"><a href="#cb25-127" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-128"><a href="#cb25-128" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_POP_JUMP_IF_TRUE(<span class="va">self</span>, jump):</span>
+<span id="cb25-129"><a href="#cb25-129" aria-hidden="true" tabindex="-1"></a>        val <span class="op">=</span> <span class="va">self</span>.pop()</span>
+<span id="cb25-130"><a href="#cb25-130" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> val:</span>
+<span id="cb25-131"><a href="#cb25-131" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.jump(jump)</span>
+<span id="cb25-132"><a href="#cb25-132" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-133"><a href="#cb25-133" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_POP_JUMP_IF_FALSE(<span class="va">self</span>, jump):</span>
+<span id="cb25-134"><a href="#cb25-134" aria-hidden="true" tabindex="-1"></a>        val <span class="op">=</span> <span class="va">self</span>.pop()</span>
+<span id="cb25-135"><a href="#cb25-135" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">not</span> val:</span>
+<span id="cb25-136"><a href="#cb25-136" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.jump(jump)</span>
+<span id="cb25-137"><a href="#cb25-137" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-138"><a href="#cb25-138" aria-hidden="true" tabindex="-1"></a>    <span class="co">## Blocks</span></span>
+<span id="cb25-139"><a href="#cb25-139" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-140"><a href="#cb25-140" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_SETUP_LOOP(<span class="va">self</span>, dest):</span>
+<span id="cb25-141"><a href="#cb25-141" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push_block(<span class="st">&#39;loop&#39;</span>, dest)</span>
+<span id="cb25-142"><a href="#cb25-142" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-143"><a href="#cb25-143" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_GET_ITER(<span class="va">self</span>):</span>
+<span id="cb25-144"><a href="#cb25-144" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push(<span class="bu">iter</span>(<span class="va">self</span>.pop()))</span>
+<span id="cb25-145"><a href="#cb25-145" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-146"><a href="#cb25-146" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_FOR_ITER(<span class="va">self</span>, jump):</span>
+<span id="cb25-147"><a href="#cb25-147" aria-hidden="true" tabindex="-1"></a>        iterobj <span class="op">=</span> <span class="va">self</span>.top()</span>
+<span id="cb25-148"><a href="#cb25-148" aria-hidden="true" tabindex="-1"></a>        <span class="cf">try</span>:</span>
+<span id="cb25-149"><a href="#cb25-149" aria-hidden="true" tabindex="-1"></a>            v <span class="op">=</span> <span class="bu">next</span>(iterobj)</span>
+<span id="cb25-150"><a href="#cb25-150" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.push(v)</span>
+<span id="cb25-151"><a href="#cb25-151" aria-hidden="true" tabindex="-1"></a>        <span class="cf">except</span> <span class="pp">StopIteration</span>:</span>
+<span id="cb25-152"><a href="#cb25-152" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.pop()</span>
+<span id="cb25-153"><a href="#cb25-153" aria-hidden="true" tabindex="-1"></a>            <span class="va">self</span>.jump(jump)</span>
+<span id="cb25-154"><a href="#cb25-154" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-155"><a href="#cb25-155" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_BREAK_LOOP(<span class="va">self</span>):</span>
+<span id="cb25-156"><a href="#cb25-156" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="st">&#39;break&#39;</span></span>
+<span id="cb25-157"><a href="#cb25-157" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-158"><a href="#cb25-158" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_POP_BLOCK(<span class="va">self</span>):</span>
+<span id="cb25-159"><a href="#cb25-159" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.pop_block()</span>
+<span id="cb25-160"><a href="#cb25-160" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-161"><a href="#cb25-161" aria-hidden="true" tabindex="-1"></a>    <span class="co">## Functions</span></span>
+<span id="cb25-162"><a href="#cb25-162" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-163"><a href="#cb25-163" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_MAKE_FUNCTION(<span class="va">self</span>, argc):</span>
+<span id="cb25-164"><a href="#cb25-164" aria-hidden="true" tabindex="-1"></a>        name <span class="op">=</span> <span class="va">self</span>.pop()</span>
+<span id="cb25-165"><a href="#cb25-165" aria-hidden="true" tabindex="-1"></a>        code <span class="op">=</span> <span class="va">self</span>.pop()</span>
+<span id="cb25-166"><a href="#cb25-166" aria-hidden="true" tabindex="-1"></a>        defaults <span class="op">=</span> <span class="va">self</span>.popn(argc)</span>
+<span id="cb25-167"><a href="#cb25-167" aria-hidden="true" tabindex="-1"></a>        globs <span class="op">=</span> <span class="va">self</span>.frame.f_globals</span>
+<span id="cb25-168"><a href="#cb25-168" aria-hidden="true" tabindex="-1"></a>        fn <span class="op">=</span> Function(name, code, globs, defaults, <span class="va">None</span>, <span class="va">self</span>)</span>
+<span id="cb25-169"><a href="#cb25-169" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push(fn)</span>
+<span id="cb25-170"><a href="#cb25-170" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-171"><a href="#cb25-171" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_CALL_FUNCTION(<span class="va">self</span>, arg):</span>
+<span id="cb25-172"><a href="#cb25-172" aria-hidden="true" tabindex="-1"></a>        lenKw, lenPos <span class="op">=</span> <span class="bu">divmod</span>(arg, <span class="dv">256</span>) <span class="co"># KWargs not supported here</span></span>
+<span id="cb25-173"><a href="#cb25-173" aria-hidden="true" tabindex="-1"></a>        posargs <span class="op">=</span> <span class="va">self</span>.popn(lenPos)</span>
+<span id="cb25-174"><a href="#cb25-174" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-175"><a href="#cb25-175" aria-hidden="true" tabindex="-1"></a>        func <span class="op">=</span> <span class="va">self</span>.pop()</span>
+<span id="cb25-176"><a href="#cb25-176" aria-hidden="true" tabindex="-1"></a>        frame <span class="op">=</span> <span class="va">self</span>.frame</span>
+<span id="cb25-177"><a href="#cb25-177" aria-hidden="true" tabindex="-1"></a>        retval <span class="op">=</span> func(<span class="op">*</span>posargs)</span>
+<span id="cb25-178"><a href="#cb25-178" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.push(retval)</span>
+<span id="cb25-179"><a href="#cb25-179" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-180"><a href="#cb25-180" aria-hidden="true" tabindex="-1"></a>    <span class="kw">def</span> byte_RETURN_VALUE(<span class="va">self</span>):</span>
+<span id="cb25-181"><a href="#cb25-181" aria-hidden="true" tabindex="-1"></a>        <span class="va">self</span>.return_value <span class="op">=</span> <span class="va">self</span>.pop()</span>
+<span id="cb25-182"><a href="#cb25-182" aria-hidden="true" tabindex="-1"></a>        <span class="cf">return</span> <span class="st">&quot;return&quot;</span></span></code></pre></div>
+<h2 id="dynamic-typing-what-the-compiler-doesnt-know">Dynamic Typing: What the Compiler Doesn’t Know</h2>
+<p>One thing you’ve probably heard is that Python is a “dynamic” language—particularly that it’s “dynamically typed”. The work we’ve done to this point sheds some light on this description.</p>
+<p>One of the things “dynamic” means in this context is that a lot of work is done at run time. We saw earlier that the Python compiler doesn’t have much information about what the code actually does. For example, consider the short function <code>mod</code> below. <code>mod</code> takes two arguments and returns the first modulo the second. In the bytecode, we see that the variables <code>a</code> and <code>b</code> are loaded, then the bytecode <code>BINARY_MODULO</code> performs the modulo operation itself.</p>
+<div class="sourceCode" id="cb26"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> <span class="kw">def</span> mod(a, b):</span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>...    <span class="cf">return</span> a <span class="op">%</span> b</span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> dis.dis(mod)</span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a>  <span class="dv">2</span>           <span class="dv">0</span> LOAD_FAST                <span class="dv">0</span> (a)</span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a>              <span class="dv">3</span> LOAD_FAST                <span class="dv">1</span> (b)</span>
+<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a>              <span class="dv">6</span> BINARY_MODULO</span>
+<span id="cb26-7"><a href="#cb26-7" aria-hidden="true" tabindex="-1"></a>              <span class="dv">7</span> RETURN_VALUE</span>
+<span id="cb26-8"><a href="#cb26-8" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> mod(<span class="dv">19</span>, <span class="dv">5</span>)</span>
+<span id="cb26-9"><a href="#cb26-9" aria-hidden="true" tabindex="-1"></a><span class="dv">4</span></span></code></pre></div>
+<p>Calculating 19 <code>%</code> 5 yields 4—no surprise there. What happens if we call it with different arguments?</p>
+<div class="sourceCode" id="cb27"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="op">&gt;&gt;&gt;</span> mod(<span class="st">&quot;by</span><span class="sc">%s</span><span class="st">de&quot;</span>, <span class="st">&quot;teco&quot;</span>)</span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a><span class="co">&#39;bytecode&#39;</span></span></code></pre></div>
+<p>What just happened? You’ve probably seen this syntax before, but in a different context:</p>
+<pre><code>&gt;&gt;&gt; print(&quot;by%sde&quot; % &quot;teco&quot;)
+bytecode</code></pre>
+<p>Using the symbol <code>%</code> to format a string for printing means invoking the instruction <code>BINARY_MODULO</code>. This instruction mods together the top two values on the stack when the instruction executes—regardless of whether they’re strings, integers, or instances of a class you defined yourself. The bytecode was generated when the function was compiled (effectively, when it was defined) and the same bytecode is used with different types of arguments.</p>
+<p>The Python compiler knows relatively little about the effect the bytecode will have. It’s up to the interpreter to determine the type of the object that <code>BINARY_MODULO</code> is operating on and do the right thing for that type. This is why Python is described as <em>dynamically typed</em>: you don’t know the types of the arguments to this function until you actually run it. By contrast, in a language that’s statically typed, the programmer tells the compiler up front what type the arguments will be (or the compiler figures them out for itself).</p>
+<p>The compiler’s ignorance is one of the challenges to optimizing Python or analyzing it statically—just looking at the bytecode, without actually running the code, you don’t know what each instruction will do! In fact, you could define a class that implements the <code>__mod__</code> method, and Python would invoke that method if you use <code>%</code> on your objects. So <code>BINARY_MODULO</code> could run any code at all!</p>
+<p>Just looking at the following code, the first calculation of <code>a % b</code> seems wasteful.</p>
+<div class="sourceCode" id="cb29"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> mod(a,b):</span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a>    a <span class="op">%</span> b</span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> a <span class="op">%</span>b</span></code></pre></div>
+<p>Unfortunately, a static analysis of this code—the kind of you can do without running it—can’t be certain that the first <code>a % b</code> really does nothing. Calling <code>__mod__</code> with <code>%</code> might write to a file, or interact with another part of your program, or do literally anything else that’s possible in Python. It’s hard to optimize a function when you don’t know what it does! In Russell Power and Alex Rubinsteyn’s great paper “How fast can we make interpreted Python?”, they note, “In the general absence of type information, each instruction must be treated as <code>INVOKE_ARBITRARY_METHOD</code>.”</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>Byterun is a compact Python interpreter that’s easier to understand than CPython. Byterun replicates CPython’s primary structural details: a stack-based interpreter operating on instruction sets called bytecode. It steps or jumps through these instructions, pushing to and popping from a stack of data. The interpreter creates, destroys, and jumps between frames as it calls into and returns from functions and generators. Byterun shares the real interpreter’s limitations, too: because Python uses dynamic typing, the interpreter must work hard at run time to determine the correct behavior of a program.</p>
+<p>I encourage you to disassemble your own programs and to run them using Byterun. You’ll quickly run into instructions that this shorter version of Byterun doesn’t implement. The full implementation can be found at https://github.com/nedbat/byterun—or, by carefully reading the real CPython interpreter’s <code>ceval.c</code>, you can implement it yourself!</p>
+<h2 id="acknowledgements">Acknowledgements</h2>
+<p>Thanks to Ned Batchelder for originating this project and guiding my contributions, Michael Arntzenius for his help debugging the code and editing the prose, Leta Montopoli for her edits, and the entire Recurse Center community for their support and interest. Any errors are my own.</p>
+<section class="footnotes" role="doc-endnotes">
+<hr />
+<ol>
+<li id="fn1" role="doc-endnote"><p>This chapter is based on bytecode produced by Python 3.5 or earlier, as there were some changes to the bytecode specification in Python 3.6.<a href="#fnref1" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn2" role="doc-endnote"><p>My thanks to Michael Arntzenius for his insight on this bug.<a href="#fnref2" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+</ol>
+</section>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
